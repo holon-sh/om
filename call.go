@@ -35,7 +35,7 @@ func (d Document) call(ctx context.Context, o Operation, arguments json.RawMessa
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	text, err := d.send(ctx, o, values, lookup, client)
+	text, err := d.send(ctx, o, values, arguments, lookup, client)
 	var refused refusal
 	switch {
 	case errors.As(err, &refused):
@@ -87,8 +87,8 @@ type unenforced string
 func (p unenforced) String() string        { return string(p) }
 func (unenforced) MatchString(string) bool { return true }
 
-func (d Document) send(ctx context.Context, o Operation, values map[string]any, lookup func(string) (string, bool), client *http.Client) ([]mcp.Content, error) {
-	request, err := d.request(ctx, o, values, lookup)
+func (d Document) send(ctx context.Context, o Operation, values map[string]any, arguments json.RawMessage, lookup func(string) (string, bool), client *http.Client) ([]mcp.Content, error) {
+	request, err := d.request(ctx, o, values, arguments, lookup)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +139,7 @@ type pair struct{ name, value string }
 var placeholder = regexp.MustCompile(`\{([^{}]+)\}`)
 var dotSegment = regexp.MustCompile(`(?i)^(?:\.|%2e){1,2}$`)
 
-func (d Document) request(ctx context.Context, o Operation, values map[string]any, lookup func(string) (string, bool)) (*http.Request, error) {
+func (d Document) request(ctx context.Context, o Operation, values map[string]any, arguments json.RawMessage, lookup func(string) (string, bool)) (*http.Request, error) {
 	server, err := d.serverURL(lookup)
 	if err != nil {
 		return nil, err
@@ -199,13 +199,13 @@ func (d Document) request(ctx context.Context, o Operation, values map[string]an
 	if len(r.query) != 0 {
 		target += "?" + join(r.query, "&")
 	}
+	var fields struct{ Body json.RawMessage }
+	if err := json.Unmarshal(arguments, &fields); err != nil {
+		return nil, err
+	}
 	var body io.Reader
-	if value, ok := values["body"]; ok && o.Body {
-		data, err := json.Marshal(value)
-		if err != nil {
-			return nil, err
-		}
-		body = bytes.NewReader(data)
+	if fields.Body != nil && o.Body {
+		body = bytes.NewReader(fields.Body)
 		r.header.Set("Content-Type", "application/json")
 	}
 	request, err := http.NewRequestWithContext(ctx, o.Method, target, body)
