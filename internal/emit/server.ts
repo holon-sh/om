@@ -38,7 +38,6 @@ type GeneratedDocument = {
   variables: { env: string; default: string; allowed?: string[] }[];
   operations: Operation[];
 };
-type Arguments = { [name: string]: JSONValue | undefined };
 type Pair = [name: string, value: string];
 type ParameterValue =
   | { kind: "scalar"; value: string }
@@ -75,7 +74,7 @@ const validator = new AjvJsonSchemaValidator(new Ajv2020({
 }));
 const tools = document.operations.map(operation => ({
   operation,
-  inputSchema: fromJsonSchema<Arguments>(operation.inputSchema, validator),
+  inputSchema: fromJsonSchema<JSONObject>(operation.inputSchema, validator),
 }));
 
 const handler = createMcpHandler(() => {
@@ -111,7 +110,7 @@ server.listen(Number(process.env.PORT ?? 3000), host, () => {
 
 class RequestFailure extends Error {}
 
-async function call(operation: Operation, args: Arguments, signal: AbortSignal): Promise<CallToolResult> {
+async function call(operation: Operation, args: JSONObject, signal: AbortSignal): Promise<CallToolResult> {
   try {
     const response = await fetch(upstreamRequest(operation, args, signal));
     if (response.status >= 300 && response.status < 400) {
@@ -126,7 +125,7 @@ async function call(operation: Operation, args: Arguments, signal: AbortSignal):
   }
 }
 
-function upstreamRequest(operation: Operation, args: Arguments, signal: AbortSignal): Request {
+function upstreamRequest(operation: Operation, args: JSONObject, signal: AbortSignal): Request {
   const url = serverURL();
   const pathValues = new Map<string, string>();
   const query = new Map<string, string[]>();
@@ -217,9 +216,7 @@ function serverURL(): URL {
     server = server.replaceAll(`{${variable.env}}`, encode(value));
   }
   const url = URL.parse(server);
-  if (!url || url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
-    throw new RequestFailure("The API server URL must use HTTPS without credentials, query, or fragment.");
-  }
+  if (!url) throw new RequestFailure("The server variables do not form a valid API server URL.");
   return url;
 }
 

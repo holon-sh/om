@@ -22,6 +22,5 @@ jobs:
           OM_TEST_NODE: '1'
       - working-directory: internal/emit
         run: |
-          npm ci --no-audit --no-fund
           npm install --no-save --no-audit --no-fund typescript@7.0.2 @types/node@24.19.2
-          npx tsc --noEmit --strict --erasableSyntaxOnly --verbatimModuleSyntax --module nodenext --target esnext --types node server.ts
+          npx tsc --noEmit --strict --erasableSyntaxOnly --verbatimModuleSyntax --module nodenext --types node server.ts

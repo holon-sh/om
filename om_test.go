@@ -2,7 +2,6 @@ package om_test
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"maps"
 	"net/url"
@@ -89,7 +88,7 @@ components:
 		{"No tools", "openapi: '3.1.1'" + strings.Replace(api, "get:\n", "trace:\n", 1), "no supported operations"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := om.Generate(context.Background(), []byte(test.doc), base)
+			_, err := om.Generate(t.Context(), []byte(test.doc), base)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("expected an error containing %q, got %v", test.want, err)
 			}
