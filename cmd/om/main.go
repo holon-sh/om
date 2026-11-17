@@ -30,7 +30,7 @@ func main() {
 }
 
 func serve(ctx context.Context, source string) error {
-	data, location, err := document(ctx, source)
+	data, location, err := load(ctx, source)
 	if err != nil {
 		return err
 	}
@@ -79,7 +79,7 @@ func local(hostname string) bool {
 
 const documentLimit = 32 << 20
 
-func document(ctx context.Context, source string) ([]byte, *url.URL, error) {
+func load(ctx context.Context, source string) ([]byte, *url.URL, error) {
 	if !strings.Contains(source, "://") {
 		file, err := os.Open(source)
 		if err != nil {

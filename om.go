@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -72,12 +73,10 @@ const (
 	Cookie     Location = "cookie"
 )
 
-func (l *Location) UnmarshalJSON(data []byte) error {
-	if err := json.Unmarshal(data, (*string)(l)); err != nil {
-		return err
-	}
+func (l *Location) UnmarshalText(text []byte) error {
+	*l = Location(text)
 	if !slices.Contains([]Location{Path, Header, Query, DeepObject, Cookie}, *l) {
-		return fmt.Errorf("unknown parameter location %q", *l)
+		return fmt.Errorf("unknown parameter location %q", text)
 	}
 	return nil
 }
@@ -170,30 +169,41 @@ func (d Document) Handler(lookup func(name string) (string, bool), transport htt
 	client := &http.Client{
 		Transport:     transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       30 * time.Second,
 	}
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return d.server(lookup, client)
+		return served{d, lookup, client}.server()
 	}, &mcp.StreamableHTTPOptions{
 		Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, DisableLocalhostProtection: true, Logger: slog.Default(),
 	}), nil
 }
 
-func (d Document) server(lookup func(string) (string, bool), client *http.Client) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: d.Title, Title: d.Title, Version: d.Version}, &mcp.ServerOptions{
+type served struct {
+	Document
+	lookup func(string) (string, bool)
+	client *http.Client
+}
+
+func (s served) server() *mcp.Server {
+	server := mcp.NewServer(&mcp.Implementation{Name: s.Title, Title: s.Title, Version: s.Version}, &mcp.ServerOptions{
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-		PageSize:     len(d.Operations),
+		PageSize:     len(s.Operations),
 	})
+	add := func(operation Operation) {
+		server.AddTool(operation.tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return s.call(ctx, operation, request.Params.Arguments), nil
+		})
+	}
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
-			called := ""
-			if method == "tools/call" {
-				called = request.GetParams().(*mcp.CallToolParamsRaw).Name
-			}
-			for _, operation := range d.Operations {
-				if method == "tools/list" || operation.Name == called {
-					server.AddTool(operation.tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-						return d.call(ctx, operation, request.Params.Arguments, lookup, client), nil
-					})
+			switch request := request.(type) {
+			case *mcp.ListToolsRequest:
+				for _, operation := range s.Operations {
+					add(operation)
+				}
+			case *mcp.CallToolRequest:
+				if i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name }); i >= 0 {
+					add(s.Operations[i])
 				}
 			}
 			return next(ctx, method, request)

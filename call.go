@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -25,32 +24,53 @@ type refusal string
 
 func (r refusal) Error() string { return string(r) }
 
-func (d Document) call(ctx context.Context, o Operation, arguments json.RawMessage, lookup func(string) (string, bool), client *http.Client) *mcp.CallToolResult {
+func failure(err error) *mcp.CallToolResult {
+	var refused refusal
+	if !errors.As(err, &refused) {
+		refused = "Could not complete the upstream request."
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(refused)}}, IsError: true}
+}
+
+func (s served) call(ctx context.Context, o Operation, arguments json.RawMessage) *mcp.CallToolResult {
 	if arguments == nil {
 		arguments = json.RawMessage("{}")
 	}
-	values, err := validate(o.InputSchema, arguments)
+	schema, err := compileSchema(o.InputSchema)
 	if err != nil {
-		return failure(fmt.Sprintf("Input validation error: Invalid arguments for tool %s: %v", o.Name, err))
+		return failure(refusal(fmt.Sprintf("The input schema of tool %s is not valid JSON Schema 2020-12: %v", o.Name, err)))
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	text, err := d.send(ctx, o, values, arguments, lookup, client)
-	var refused refusal
+	values, err := jsonschema.UnmarshalJSON(bytes.NewReader(arguments))
+	if err == nil {
+		err = schema.Validate(values)
+	}
+	if err != nil {
+		return failure(refusal(fmt.Sprintf("Input validation error: Invalid arguments for tool %s: %v", o.Name, err)))
+	}
+	request, err := s.request(ctx, o, values.(map[string]any), arguments)
+	if err != nil {
+		return failure(err)
+	}
+	response, err := s.client.Do(request)
+	if err != nil {
+		return failure(err)
+	}
+	defer response.Body.Close()
+	text, err := responseText(response)
 	switch {
-	case errors.As(err, &refused):
-		return failure(refused.Error())
 	case err != nil:
-		return failure("Could not complete the upstream request.")
+		return failure(err)
+	case response.StatusCode/100 != 2 && text != "":
+		return failure(refusal(fmt.Sprintf("HTTP %d: %s", response.StatusCode, text)))
+	case response.StatusCode/100 != 2:
+		return failure(refusal(fmt.Sprintf("HTTP %d", response.StatusCode)))
+	case text == "":
+		return &mcp.CallToolResult{Content: []mcp.Content{}}
 	}
-	return &mcp.CallToolResult{Content: text}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
 
-func failure(text string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}, IsError: true}
-}
-
-func validate(schema, arguments json.RawMessage) (map[string]any, error) {
+func compileSchema(schema json.RawMessage) (*jsonschema.Schema, error) {
 	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
 	if err != nil {
 		return nil, err
@@ -68,48 +88,13 @@ func validate(schema, arguments json.RawMessage) (map[string]any, error) {
 	if err := compiler.AddResource(location, document); err != nil {
 		return nil, err
 	}
-	compiled, err := compiler.Compile(location)
-	if err != nil {
-		return nil, err
-	}
-	value, err := jsonschema.UnmarshalJSON(bytes.NewReader(arguments))
-	if err != nil {
-		return nil, err
-	}
-	if err := compiled.Validate(value); err != nil {
-		return nil, err
-	}
-	return value.(map[string]any), nil
+	return compiler.Compile(location)
 }
 
 type unenforced string
 
 func (p unenforced) String() string        { return string(p) }
 func (unenforced) MatchString(string) bool { return true }
-
-func (d Document) send(ctx context.Context, o Operation, values map[string]any, arguments json.RawMessage, lookup func(string) (string, bool), client *http.Client) ([]mcp.Content, error) {
-	request, err := d.request(ctx, o, values, arguments, lookup)
-	if err != nil {
-		return nil, err
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	text, err := responseText(response)
-	switch {
-	case err != nil:
-		return nil, err
-	case response.StatusCode/100 != 2 && text != "":
-		return nil, refusal(fmt.Sprintf("HTTP %d: %s", response.StatusCode, text))
-	case response.StatusCode/100 != 2:
-		return nil, refusal(fmt.Sprintf("HTTP %d", response.StatusCode))
-	case text == "":
-		return []mcp.Content{}, nil
-	}
-	return []mcp.Content{&mcp.TextContent{Text: text}}, nil
-}
 
 func responseText(response *http.Response) (string, error) {
 	const limit = 1 << 20
@@ -128,7 +113,6 @@ func responseText(response *http.Response) (string, error) {
 }
 
 type upstream struct {
-	path    map[string]string
 	header  http.Header
 	query   []pair
 	cookies []pair
@@ -139,12 +123,13 @@ type pair struct{ name, value string }
 var placeholder = regexp.MustCompile(`\{([^{}]+)\}`)
 var dotSegment = regexp.MustCompile(`(?i)^(?:\.|%2e){1,2}$`)
 
-func (d Document) request(ctx context.Context, o Operation, values map[string]any, arguments json.RawMessage, lookup func(string) (string, bool)) (*http.Request, error) {
-	server, err := d.serverURL(lookup)
+func (s served) request(ctx context.Context, o Operation, values map[string]any, arguments json.RawMessage) (*http.Request, error) {
+	server, err := s.serverURL()
 	if err != nil {
 		return nil, err
 	}
-	r := upstream{path: map[string]string{}, header: http.Header{}}
+	paths := map[string]string{}
+	r := upstream{header: http.Header{}}
 	for _, parameter := range o.Parameters {
 		escape := encode
 		if parameter.In == Header {
@@ -154,13 +139,13 @@ func (d Document) request(ctx context.Context, o Operation, values map[string]an
 		if err != nil {
 			return nil, err
 		}
-		if len(value.parts) == 0 {
+		if value.items == nil && value.entries == nil {
 			continue
 		}
 		name := encode(parameter.Name)
 		switch parameter.In {
 		case Path:
-			r.path[parameter.Name] = value.simple(parameter.Explode)
+			paths[parameter.Name] = value.simple(parameter.Explode)
 		case Header:
 			r.header.Set(parameter.Name, value.simple(parameter.Explode))
 		case Query:
@@ -168,24 +153,25 @@ func (d Document) request(ctx context.Context, o Operation, values map[string]an
 		case Cookie:
 			r.cookies = append(r.cookies, value.form(name, parameter.Explode)...)
 		case DeepObject:
-			if !value.object {
+			if value.entries == nil {
 				return nil, refusal("A deepObject parameter must be an object.")
 			}
-			for i := 0; i < len(value.parts); i += 2 {
-				r.query = append(r.query, pair{name + "%5B" + value.parts[i] + "%5D", value.parts[i+1]})
+			for _, entry := range value.entries {
+				r.query = append(r.query, pair{name + "%5B" + entry.name + "%5D", entry.value})
 			}
 		}
 	}
 	for _, credential := range o.Security {
-		if err := credential.attach(&r, lookup); err != nil {
+		if err := credential.attach(&r, s.lookup); err != nil {
 			return nil, err
 		}
 	}
 	var missing error
 	path := placeholder.ReplaceAllStringFunc(o.Path, func(field string) string {
-		value, ok := r.path[field[1:len(field)-1]]
+		name := strings.Trim(field, "{}")
+		value, ok := paths[name]
 		if !ok && missing == nil {
-			missing = refusal(fmt.Sprintf("Path parameter %s must specify a value.", field[1:len(field)-1]))
+			missing = refusal(fmt.Sprintf("Path parameter %s must specify a value.", name))
 		}
 		return value
 	})
@@ -199,13 +185,13 @@ func (d Document) request(ctx context.Context, o Operation, values map[string]an
 	if len(r.query) != 0 {
 		target += "?" + join(r.query, "&")
 	}
-	var fields struct{ Body json.RawMessage }
-	if err := json.Unmarshal(arguments, &fields); err != nil {
-		return nil, err
-	}
 	var body io.Reader
-	if fields.Body != nil && o.Body {
-		body = bytes.NewReader(fields.Body)
+	if _, ok := values["body"]; ok && o.Body {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(arguments, &fields); err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(fields["body"])
 		r.header.Set("Content-Type", "application/json")
 	}
 	request, err := http.NewRequestWithContext(ctx, o.Method, target, body)
@@ -219,13 +205,13 @@ func (d Document) request(ctx context.Context, o Operation, values map[string]an
 	return request, nil
 }
 
-func (d Document) serverURL(lookup func(string) (string, bool)) (string, error) {
-	server := d.Server
-	for _, input := range d.Inputs {
-		if input.Secret {
+func (s served) serverURL() (string, error) {
+	server := s.Server
+	for _, input := range s.Inputs {
+		if input.Default == nil {
 			continue
 		}
-		value, ok := lookup(input.Name)
+		value, ok := s.lookup(input.Name)
 		if !ok {
 			value = *input.Default
 		}
@@ -241,72 +227,71 @@ func (d Document) serverURL(lookup func(string) (string, bool)) (string, error) 
 }
 
 type argument struct {
-	parts  []string
-	object bool
+	items   []string
+	entries []pair
 }
 
 func argumentOf(value any, escape func(string) string) (argument, error) {
 	var result argument
-	add := func(part any) error {
+	scalar := func(part any) (string, error) {
 		switch part.(type) {
-		case nil:
 		case []any, map[string]any:
-			return refusal("Parameters must be scalars or flat collections.")
-		default:
-			result.parts = append(result.parts, escape(fmt.Sprint(part)))
+			return "", refusal("Parameters must be scalars or flat collections.")
 		}
-		return nil
+		return escape(fmt.Sprint(part)), nil
 	}
 	switch value := value.(type) {
+	case nil:
 	case []any:
 		for _, item := range value {
-			if err := add(item); err != nil {
+			if item == nil {
+				continue
+			}
+			part, err := scalar(item)
+			if err != nil {
 				return argument{}, err
 			}
+			result.items = append(result.items, part)
 		}
 	case map[string]any:
-		result.object = true
 		for _, key := range slices.Sorted(maps.Keys(value)) {
 			if value[key] == nil {
 				continue
 			}
-			result.parts = append(result.parts, escape(key))
-			if err := add(value[key]); err != nil {
+			part, err := scalar(value[key])
+			if err != nil {
 				return argument{}, err
 			}
+			result.entries = append(result.entries, pair{escape(key), part})
 		}
 	default:
-		if err := add(value); err != nil {
+		part, err := scalar(value)
+		if err != nil {
 			return argument{}, err
 		}
+		result.items = []string{part}
 	}
 	return result, nil
 }
 
 func (a argument) simple(explode bool) string {
-	if !a.object || !explode {
-		return strings.Join(a.parts, ",")
+	if explode && a.entries != nil {
+		return join(a.entries, ",")
 	}
-	entries := make([]string, 0, len(a.parts)/2)
-	for i := 0; i < len(a.parts); i += 2 {
-		entries = append(entries, a.parts[i]+"="+a.parts[i+1])
+	parts := a.items
+	for _, entry := range a.entries {
+		parts = append(parts, entry.name, entry.value)
 	}
-	return strings.Join(entries, ",")
+	return strings.Join(parts, ",")
 }
 
 func (a argument) form(name string, explode bool) []pair {
-	var pairs []pair
-	switch {
-	case explode && a.object:
-		for i := 0; i < len(a.parts); i += 2 {
-			pairs = append(pairs, pair{a.parts[i], a.parts[i+1]})
-		}
-	case explode:
-		for _, part := range a.parts {
-			pairs = append(pairs, pair{name, part})
-		}
-	default:
-		pairs = []pair{{name, a.simple(false)}}
+	if !explode {
+		return []pair{{name, a.simple(false)}}
+	}
+	pairs := a.entries
+	for _, item := range a.items {
+		pairs = append(pairs, pair{name, item})
 	}
 	return pairs
 }
