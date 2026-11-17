@@ -44,6 +44,8 @@ func TestHandler(t *testing.T) {
         default: us
         enum: [us, eu]
 `), []byte("  - url: "+upstream.URL+"/{version}\n    variables:\n      version: {default: v1}\n"), 1)
+	fixture = bytes.Replace(fixture, []byte("      operationId: constructor\n"),
+		[]byte("      operationId: constructor\n      description: "+strings.Repeat("w", 256<<10)+"\n"), 1)
 	compiled, _, err := compile.Compile(t.Context(), fixture, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -78,14 +80,27 @@ func TestHandler(t *testing.T) {
 	}
 	defer session.Close()
 
-	list, err := session.ListTools(t.Context(), nil)
+	page, err := session.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 2 || list.Tools[0].Name != "_constructor" || !list.Tools[0].Annotations.ReadOnlyHint {
-		t.Fatalf("tools/list: %+v", list.Tools)
+	if len(page.Tools) != 1 || page.NextCursor == "" {
+		t.Fatalf("a page of tools/list went past 256 KiB of tool definitions: %d tools", len(page.Tools))
 	}
-	schema, err := json.Marshal(list.Tools[0].InputSchema)
+	if _, err := session.ListTools(t.Context(), &mcp.ListToolsParams{Cursor: "unknown"}); err == nil {
+		t.Fatal("tools/list accepted a cursor it never issued")
+	}
+	var tools []*mcp.Tool
+	for tool, err := range session.Tools(t.Context(), nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		tools = append(tools, tool)
+	}
+	if len(tools) != 2 || tools[0].Name != "_constructor" || tools[1].Name != "update-widget" || !tools[0].Annotations.ReadOnlyHint {
+		t.Fatalf("tools/list: %+v", tools)
+	}
+	schema, err := json.Marshal(tools[0].InputSchema)
 	if err != nil {
 		t.Fatal(err)
 	}

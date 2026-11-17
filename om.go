@@ -193,11 +193,7 @@ func (s served) server() *mcp.Server {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
 			switch request := request.(type) {
 			case *mcp.ListToolsRequest:
-				tools := make([]*mcp.Tool, len(s.Operations))
-				for i, operation := range s.Operations {
-					tools[i] = operation.tool()
-				}
-				return &mcp.ListToolsResult{Tools: tools, Cacheable: mcp.Cacheable{CacheScope: "public"}}, nil
+				return s.list(request.Params)
 			case *mcp.CallToolRequest:
 				i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name })
 				if i < 0 {
@@ -209,6 +205,30 @@ func (s served) server() *mcp.Server {
 		}
 	})
 	return server
+}
+
+const pageBytes = 256 << 10
+
+func (s served) list(params *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
+	start := 0
+	if params != nil && params.Cursor != "" {
+		var err error
+		start, err = strconv.Atoi(params.Cursor)
+		if err != nil || start <= 0 || start >= len(s.Operations) {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("invalid cursor %q", params.Cursor)}
+		}
+	}
+	result := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Cacheable: mcp.Cacheable{CacheScope: "public"}}
+	size := 0
+	for _, operation := range s.Operations[start:] {
+		size += len(operation.Name) + len(operation.Title) + len(operation.Description) + len(operation.InputSchema)
+		if len(result.Tools) != 0 && size > pageBytes {
+			result.NextCursor = strconv.Itoa(start + len(result.Tools))
+			break
+		}
+		result.Tools = append(result.Tools, operation.tool())
+	}
+	return result, nil
 }
 
 func (o Operation) tool() *mcp.Tool {
