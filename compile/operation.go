@@ -191,7 +191,6 @@ func compileSecurity(doc *openapi3.T, op *openapi3.Operation) (om.Security, []in
 	for _, requirement := range requirements {
 		auth := make(om.Security, 0, len(requirement))
 		var inputs []input
-		destinations := map[string]struct{}{}
 		for _, name := range slices.Sorted(maps.Keys(requirement)) {
 			if doc.Components == nil {
 				break
@@ -201,14 +200,9 @@ func compileSecurity(doc *openapi3.T, op *openapi3.Operation) (om.Security, []in
 				break
 			}
 			value, needed := compileScheme(name, ref.Value)
-			if value == nil {
+			if value == nil || slices.ContainsFunc(auth, func(c om.Credential) bool { return destination(c) == destination(value) }) {
 				break
 			}
-			sent := destination(value)
-			if _, exists := destinations[sent]; exists {
-				break
-			}
-			destinations[sent] = struct{}{}
 			auth = append(auth, value)
 			inputs = append(inputs, needed...)
 		}
