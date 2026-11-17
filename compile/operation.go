@@ -204,10 +204,11 @@ func compileSecurity(doc *openapi3.T, op *openapi3.Operation) (om.Security, []in
 			if value == nil {
 				break
 			}
-			if _, exists := destinations[destination(value)]; exists {
+			sent := destination(value)
+			if _, exists := destinations[sent]; exists {
 				break
 			}
-			destinations[destination(value)] = struct{}{}
+			destinations[sent] = struct{}{}
 			auth = append(auth, value)
 			inputs = append(inputs, needed...)
 		}

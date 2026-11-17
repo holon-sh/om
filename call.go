@@ -240,36 +240,32 @@ func argumentOf(value any, escape func(string) string) (argument, error) {
 		}
 		return escape(fmt.Sprint(part)), nil
 	}
-	switch value := value.(type) {
-	case nil:
-	case []any:
-		for _, item := range value {
-			if item == nil {
+	if object, ok := value.(map[string]any); ok {
+		for _, key := range slices.Sorted(maps.Keys(object)) {
+			if object[key] == nil {
 				continue
 			}
-			part, err := scalar(item)
-			if err != nil {
-				return argument{}, err
-			}
-			result.items = append(result.items, part)
-		}
-	case map[string]any:
-		for _, key := range slices.Sorted(maps.Keys(value)) {
-			if value[key] == nil {
-				continue
-			}
-			part, err := scalar(value[key])
+			part, err := scalar(object[key])
 			if err != nil {
 				return argument{}, err
 			}
 			result.entries = append(result.entries, pair{escape(key), part})
 		}
-	default:
-		part, err := scalar(value)
+		return result, nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		items = []any{value}
+	}
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		part, err := scalar(item)
 		if err != nil {
 			return argument{}, err
 		}
-		result.items = []string{part}
+		result.items = append(result.items, part)
 	}
 	return result, nil
 }
