@@ -1,0 +1,75 @@
+openapi: 3.0.4
+info:
+  title: Widgets
+  version: '1'
+  description: Example API for the generator
+servers:
+  - url: https://{region}.example.test/v1
+    variables:
+      region:
+        default: us
+        enum: [us, eu]
+security:
+  - widget-key: []
+paths:
+  /widgets/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getWidget
+      parameters:
+        - name: filter
+          in: query
+          style: deepObject
+          schema:
+            $ref: '#/components/schemas/Filter'
+      responses:
+        '200':
+          description: Widget
+    post:
+      operationId: update-widget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: Updated
+  /upload:
+    post:
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Uploaded
+components:
+  securitySchemes:
+    widget-key:
+      type: apiKey
+      name: X-Widget-Key
+      in: header
+  schemas:
+    Filter:
+      type: object
+      properties:
+        min:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+        category:
+          type: string
+          nullable: true
