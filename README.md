@@ -32,7 +32,14 @@ The server validates arguments as JSON Schema 2020-12 before calling the API. It
 
 `om` skips each operation it cannot serve and records the reason, for example OAuth-only security, a request body that is not `application/json`, a path- or operation-level server, or two parameters with the same name. `om generate` prints every skipped operation.
 
-Generation fails as a whole only when the document cannot be loaded (it is not JSON or YAML, or a `$ref` points outside the document or does not resolve), is not OpenAPI 3.0, 3.1, or 3.2 with an `info` object, its first server does not resolve to an HTTPS URL, or no operation is supported. A schema that no supported operation uses does not affect generation, however invalid it is.
+Generation fails as a whole only when:
+
+- the document cannot be loaded as OpenAPI JSON or YAML, including when a `$ref` points outside the document or does not resolve;
+- it is not OpenAPI 3.0, 3.1, or 3.2, or has no `info` object;
+- its first server does not resolve to an HTTPS URL with a valid host and port and no credentials, query, or fragment, or its variables are undeclared or map to the same `OM_` name;
+- no operation is supported.
+
+A schema that no supported operation uses does not affect generation, however invalid it is.
 
 ## Embed
 
