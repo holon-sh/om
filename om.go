@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -187,24 +188,22 @@ type served struct {
 func (s served) server() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: s.Title, Title: s.Title, Version: s.Version}, &mcp.ServerOptions{
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-		PageSize:     len(s.Operations),
 	})
-	add := func(operation Operation) {
-		server.AddTool(operation.tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return s.call(ctx, operation, request.Params.Arguments), nil
-		})
-	}
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
 			switch request := request.(type) {
 			case *mcp.ListToolsRequest:
-				for _, operation := range s.Operations {
-					add(operation)
+				tools := make([]*mcp.Tool, len(s.Operations))
+				for i, operation := range s.Operations {
+					tools[i] = operation.tool()
 				}
+				return &mcp.ListToolsResult{Tools: tools, Cacheable: mcp.Cacheable{CacheScope: "public"}}, nil
 			case *mcp.CallToolRequest:
-				if i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name }); i >= 0 {
-					add(s.Operations[i])
+				i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name })
+				if i < 0 {
+					return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unknown tool %q", request.Params.Name)}
 				}
+				return s.call(ctx, s.Operations[i], request.Params.Arguments), nil
 			}
 			return next(ctx, method, request)
 		}
