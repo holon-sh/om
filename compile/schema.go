@@ -1,4 +1,4 @@
-package om
+package compile
 
 import (
 	"bytes"

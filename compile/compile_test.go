@@ -1,9 +1,7 @@
-package om_test
+package compile_test
 
 import (
-	"bytes"
 	"fmt"
-	"maps"
 	"net/url"
 	"os"
 	"slices"
@@ -11,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/holon-sh/om"
+	"github.com/holon-sh/om/compile"
 )
 
 func TestProjectContract(t *testing.T) {
@@ -18,15 +17,15 @@ func TestProjectContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	project, err := om.Generate(t.Context(), data, nil)
+	project, omitted, err := compile.Compile(t.Context(), data, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if project.Title != "Widgets" || project.Version != "1" {
 		t.Fatalf("wrong identity: %s, %s", project.Title, project.Version)
 	}
-	if project.Endpoint != (om.Endpoint{Host: "{OM_REGION}.example.test", Port: 443}) {
-		t.Fatalf("endpoint: %+v", project.Endpoint)
+	if project.Endpoint() != (om.Endpoint{Host: "{OM_REGION}.example.test", Port: 443}) {
+		t.Fatalf("endpoint: %+v", project.Endpoint())
 	}
 	if len(project.Inputs) != 2 {
 		t.Fatalf("inputs: %+v", project.Inputs)
@@ -38,15 +37,8 @@ func TestProjectContract(t *testing.T) {
 	if key.Name != "OM_WIDGET_KEY" || !key.Secret || key.Default != nil {
 		t.Fatalf("key input: %+v", key)
 	}
-	if len(project.Omitted) != 1 || project.Omitted[0].Path != "/upload" || !strings.Contains(project.Omitted[0].Reason, "multipart/form-data") {
-		t.Fatalf("omissions: %+v", project.Omitted)
-	}
-	if actual := slices.Sorted(maps.Keys(project.Files)); !slices.Equal(actual, []string{"document.json", "package-lock.json", "package.json", "server.ts"}) {
-		t.Fatalf("project files: %q", actual)
-	}
-	second, err := om.Generate(t.Context(), data, nil)
-	if err != nil || !maps.EqualFunc(project.Files, second.Files, bytes.Equal) {
-		t.Fatalf("generate the same document twice: %v", err)
+	if len(omitted) != 1 || omitted[0].Path != "/upload" || !strings.Contains(omitted[0].Reason, "multipart/form-data") {
+		t.Fatalf("omissions: %+v", omitted)
 	}
 }
 
@@ -67,12 +59,12 @@ components:
 	base := &url.URL{Scheme: "https", Host: "spec.example.test:8443", Path: "/api/specs/openapi.yaml"}
 	for _, version := range []string{"3.0.4", "3.1.1", "3.2.0"} {
 		t.Run(version, func(t *testing.T) {
-			project, err := om.Generate(t.Context(), []byte("openapi: "+version+api), base)
+			project, _, err := compile.Compile(t.Context(), []byte("openapi: "+version+api), base)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if project.Endpoint != (om.Endpoint{Host: "spec.example.test", Port: 8443}) {
-				t.Fatalf("endpoint: %+v", project.Endpoint)
+			if project.Endpoint() != (om.Endpoint{Host: "spec.example.test", Port: 8443}) {
+				t.Fatalf("endpoint: %+v", project.Endpoint())
 			}
 		})
 	}
@@ -88,7 +80,7 @@ components:
 		{"No tools", "openapi: '3.1.1'" + strings.Replace(api, "get:\n", "trace:\n", 1), "no supported operations"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := om.Generate(t.Context(), []byte(test.doc), base)
+			_, _, err := compile.Compile(t.Context(), []byte(test.doc), base)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("expected an error containing %q, got %v", test.want, err)
 			}
@@ -174,12 +166,12 @@ servers:
     variables:
       api-key: {default: eu}
 %s`, test.doc)
-			project, err := om.Generate(t.Context(), []byte(document), nil)
+			_, omissions, err := compile.Compile(t.Context(), []byte(document), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var omitted []string
-			for _, omission := range project.Omitted {
+			for _, omission := range omissions {
 				omitted = append(omitted, omission.Method+" "+omission.Path)
 			}
 			if !slices.Equal(omitted, []string{test.omitted}) {
