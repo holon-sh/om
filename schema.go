@@ -58,13 +58,10 @@ func (b schemaBuilder) normalize(value any) error {
 		}
 	}
 	if dialect, ok := fields["$schema"].(string); ok {
-		switch dialect {
-		case "https://json-schema.org/draft/2020-12/schema",
-			"https://spec.openapis.org/oas/3.1/dialect/base", "https://spec.openapis.org/oas/3.2/dialect/base":
-			delete(fields, "$schema")
-		default:
+		if !supportedDialect(dialect) {
 			return errors.New("schema dialect is unsupported")
 		}
+		delete(fields, "$schema")
 	}
 	if b.doc.IsOpenAPI30() {
 		normalize30(fields)
@@ -117,7 +114,7 @@ func (b schemaBuilder) reference(reference string) (string, error) {
 		}
 		b.definitions[name] = value
 	}
-	return "#/$defs/" + fragment, nil
+	return (&url.URL{Fragment: "/$defs/" + fragment}).String(), nil
 }
 
 func normalize30(fields map[string]any) {
@@ -139,4 +136,13 @@ func normalize30(fields map[string]any) {
 			}
 		}
 	}
+}
+
+func supportedDialect(dialect string) bool {
+	switch dialect {
+	case "", "https://json-schema.org/draft/2020-12/schema",
+		"https://spec.openapis.org/oas/3.1/dialect/base", "https://spec.openapis.org/oas/3.2/dialect/base":
+		return true
+	}
+	return false
 }

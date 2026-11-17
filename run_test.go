@@ -26,7 +26,14 @@ func TestGeneratedServer(t *testing.T) {
 	}
 	upstreamCalls := make(chan *http.Request, 8)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamCalls <- r.Clone(r.Context())
+		contents, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		captured := r.Clone(r.Context())
+		captured.Body = io.NopCloser(bytes.NewReader(contents))
+		upstreamCalls <- captured
 		if strings.HasSuffix(r.URL.Path, "/redirect") {
 			http.Redirect(w, r, "/v1/widgets/elsewhere", http.StatusFound)
 			return
@@ -101,7 +108,7 @@ func TestGeneratedServer(t *testing.T) {
 		}
 	}
 	client.call(t, "tools/list", map[string]any{}, &list)
-	if len(list.Tools) != 2 || list.Tools[0].Name != "getWidget" || !list.Tools[0].Annotations.ReadOnlyHint {
+	if len(list.Tools) != 2 || list.Tools[0].Name != "_constructor" || !list.Tools[0].Annotations.ReadOnlyHint {
 		t.Fatalf("tools/list: %+v", list)
 	}
 	if missing := list.Tools[0].InputSchema["$defs"]; !bytes.Contains(missing, []byte(`"exclusiveMinimum":0`)) {
@@ -112,7 +119,7 @@ func TestGeneratedServer(t *testing.T) {
 		t.Helper()
 		var result toolResult
 		client.call(t, "tools/call", map[string]any{
-			"name": "getWidget", "arguments": map[string]any{
+			"name": "_constructor", "arguments": map[string]any{
 				"path": map[string]string{"id": path}, "query": map[string]any{"filter": map[string]any{"min": min, "category": nil}},
 			},
 		}, &result)
@@ -132,6 +139,25 @@ func TestGeneratedServer(t *testing.T) {
 	}
 	if result := callWidget("invalid", 0); !result.IsError || len(upstreamCalls) != 0 {
 		t.Fatalf("schema violation reached the upstream: %+v", result)
+	}
+	var updated toolResult
+	client.call(t, "tools/call", map[string]any{
+		"name": "update-widget", "arguments": map[string]any{
+			"path": map[string]string{"id": "a"}, "body": map[string]string{"name": "next"},
+		},
+	}, &updated)
+	if updated.IsError {
+		t.Fatalf("JSON body rejected: %+v", updated)
+	}
+	select {
+	case request := <-upstreamCalls:
+		body, err := io.ReadAll(request.Body)
+		if err != nil || request.Method != "POST" || string(body) != `{"name":"next"}` ||
+			request.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("incorrect upstream JSON request: %s %s: %v", request.Method, body, err)
+		}
+	default:
+		t.Fatal("successful update made no upstream request")
 	}
 	if result := callWidget("redirect", 1); !result.IsError || len(upstreamCalls) != 1 {
 		t.Fatalf("upstream redirect was followed or accepted: %+v", result)

@@ -25,7 +25,6 @@ type Operation = {
   inputSchema: JSONObject;
   parameters: Parameter[];
   security: Credential[];
-  body?: "application/json";
 };
 type GeneratedDocument = {
   name: string;
@@ -191,9 +190,9 @@ function upstreamRequest(operation: Operation, args: Arguments, signal: AbortSig
   url.search = joinPairs(query, "&");
   if (cookies.size) headers.set("Cookie", joinPairs(cookies, "; "));
   let body: string | undefined;
-  if (operation.body && args.body !== undefined) {
+  if (args.body !== undefined) {
     body = JSON.stringify(args.body);
-    headers.set("Content-Type", operation.body);
+    headers.set("Content-Type", "application/json");
   }
   return new Request(url, {
     method: operation.method, headers, body, redirect: "manual",

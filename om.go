@@ -78,6 +78,9 @@ func Generate(ctx context.Context, data []byte, location *url.URL, options Optio
 	default:
 		return Project{}, errors.New("expected an OpenAPI 3.0, 3.1, or 3.2 document")
 	}
+	if !supportedDialect(doc.JSONSchemaDialect) {
+		return Project{}, errors.New("document JSON Schema dialect is unsupported")
+	}
 	if err := doc.Validate(ctx, openapi3.DisableExamplesValidation()); err != nil {
 		return Project{}, fmt.Errorf("validate OpenAPI document: %w", err)
 	}

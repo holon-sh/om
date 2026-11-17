@@ -21,7 +21,6 @@ type operation struct {
 	InputSchema schema        `json:"inputSchema"`
 	Parameters  []parameter   `json:"parameters"`
 	Security    []credentials `json:"security"`
-	Body        string        `json:"body,omitempty"`
 }
 
 type parameter struct {
@@ -48,6 +47,12 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 	}
 	name = toolNameChar.ReplaceAllString(name, "_")
 	name = name[:min(len(name), 128)]
+	if slices.Contains([]string{
+		"constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__",
+		"__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString",
+	}, name) {
+		name = "_" + name
+	}
 	auth, inputs, err := compileSecurity(doc, op)
 	if err != nil {
 		return operation{}, nil, err
@@ -93,7 +98,6 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 			return operation{}, nil, fmt.Errorf("request body: %w", err)
 		}
 		root.add("body", shape, op.RequestBody.Value.Required)
-		tool.Body = "application/json"
 	}
 	tool.InputSchema = root.schema()
 	if len(builder.definitions) != 0 {

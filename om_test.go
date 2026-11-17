@@ -93,6 +93,7 @@ paths:
 		{"Swagger", "swagger: '2.0'" + api, "OpenAPI 3.0"},
 		{"HTTP server", "openapi: '3.1.1'" + strings.Replace(api, "../v2", "http://example.test", 1), "HTTPS"},
 		{"External reference", "openapi: '3.1.1'" + strings.Replace(api, "operationId: listWidgets", "requestBody: {$ref: 'https://example.test/body.yaml'}", 1), "external"},
+		{"Schema dialect", "openapi: '3.1.1'\njsonSchemaDialect: https://example.test/dialect" + api, "dialect is unsupported"},
 		{"No tools", "openapi: '3.1.1'" + strings.Replace(api, "get:\n", "trace:\n", 1), "no supported operations"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

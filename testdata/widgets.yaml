@@ -20,7 +20,7 @@ paths:
         schema:
           type: string
     get:
-      operationId: getWidget
+      operationId: constructor
       parameters:
         - name: filter
           in: query
@@ -67,9 +67,14 @@ components:
       type: object
       properties:
         min:
-          type: integer
-          minimum: 0
-          exclusiveMinimum: true
+          $ref: '#/components/schemas/Bounds/properties/minimum%25'
         category:
           type: string
           nullable: true
+    Bounds:
+      type: object
+      properties:
+        minimum%:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
