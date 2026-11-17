@@ -42,6 +42,7 @@ func (b schemaBuilder) normalize(value any) error {
 	if !ok {
 		return nil
 	}
+	delete(fields, "x-mcp-header")
 	if reference, ok := fields["$ref"].(string); ok {
 		reference, err := b.reference(reference)
 		if err != nil {

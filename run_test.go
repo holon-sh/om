@@ -95,10 +95,6 @@ func TestGeneratedServer(t *testing.T) {
 		t.Fatalf("generated server did not report a listening address: %s", line)
 	}
 	client := mcpClient{url: origin}
-	client.call(t, "initialize", map[string]any{
-		"protocolVersion": "2025-11-25", "capabilities": map[string]any{},
-		"clientInfo": map[string]any{"name": "test", "version": "1"},
-	}, nil)
 
 	var list struct {
 		Tools []struct {
@@ -174,9 +170,15 @@ type toolResult struct {
 	Content []struct{ Text string }
 }
 
-func (client *mcpClient) call(t *testing.T, method string, params any, result any) {
+func (client *mcpClient) call(t *testing.T, method string, params map[string]any, result any) {
 	t.Helper()
+	const revision = "2026-07-28"
 	client.id++
+	params["_meta"] = map[string]any{
+		"io.modelcontextprotocol/protocolVersion":    revision,
+		"io.modelcontextprotocol/clientInfo":         map[string]string{"name": "test", "version": "1"},
+		"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+	}
 	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": client.id, "method": method, "params": params})
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +191,11 @@ func (client *mcpClient) call(t *testing.T, method string, params any, result an
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("Mcp-Protocol-Version", "2025-11-25")
+	req.Header.Set("Mcp-Protocol-Version", revision)
+	req.Header.Set("Mcp-Method", method)
+	if name, ok := params["name"].(string); ok {
+		req.Header.Set("Mcp-Name", name)
+	}
 	response, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

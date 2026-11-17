@@ -39,6 +39,7 @@ paths:
             schema:
               type: object
               required: [name]
+              x-mcp-header: X-Widget-Body
               properties:
                 name:
                   type: string
