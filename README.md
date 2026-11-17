@@ -14,7 +14,7 @@ npm ci
 npm start
 ```
 
-`npm start` serves MCP over Streamable HTTP at `http://127.0.0.1:3000/mcp`. Set `HOST` and `PORT` to listen elsewhere. On a loopback host the server accepts only localhost `Host` and `Origin` headers. The server has no authentication of its own, so put it behind one that authenticates clients before listening beyond loopback. Set the credential environment variables that `om generate` prints before starting the server. Server variables default to the document's values. Override one with `OM_` followed by the variable's name in upper case, with every character other than A–Z and 0–9 replaced by `_`. A value outside the variable's `enum` fails every call.
+`npm start` serves MCP over Streamable HTTP at `http://127.0.0.1:3000/mcp`. Set `HOST` and `PORT` to listen elsewhere. When `HOST` is `127.0.0.1`, `::1`, or `localhost`, the server accepts only localhost `Host` and `Origin` headers. The server has no authentication of its own, so put it behind one that authenticates clients before listening beyond loopback. Set the credential environment variables that `om generate` prints before starting the server. Server variables default to the document's values. Override one with `OM_` followed by the variable's name in upper case, with every character other than A–Z and 0–9 replaced by `_`. A value outside the variable's `enum` fails every call.
 
 A document read from a file needs an absolute HTTPS server URL. A document fetched by URL may use a relative one. The output directory must be new.
 
