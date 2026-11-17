@@ -42,7 +42,7 @@ handler, err := served.Handler(os.LookupEnv, http.DefaultTransport)
 http.Handle("/mcp", handler)
 ```
 
-Only `compile` parses OpenAPI, which can take a few hundred MB for a large document. `Handler` needs only the model: `lookup` supplies credentials and server variables by name, and `transport` carries every request to the API. A handler is cheap to build, so a host can build one per request. It refuses a model whose `om` format it does not know.
+Only `compile` parses OpenAPI, which can take a few hundred MB for a large document. `Handler` needs only the model: `lookup` supplies credentials and server variables by name, and `transport` carries every request to the API. A handler is cheap to build, so a host can build one per request: a call reads only the called operation, and `tools/list` returns the tools in pages of about 256 KiB. It refuses a model whose `om` format it does not know.
 
 ## License
 
