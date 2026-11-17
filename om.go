@@ -2,35 +2,40 @@ package om
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"maps"
+	"log/slog"
+	"net/http"
 	"net/url"
-	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
-	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type Project struct {
-	Files       map[string][]byte
-	Title       string
-	Version     string
-	Description string
-	Inputs      []Input
-	Endpoint    Endpoint
-	Omitted     []Omission
+const Format = 1
+
+// Document is a compiled OpenAPI document: one MCP tool per operation.
+// Its JSON encoding is the model a host stores between compiling and serving.
+type Document struct {
+	Format      int         `json:"om"`
+	Title       string      `json:"title"`
+	Version     string      `json:"version"`
+	Description string      `json:"description,omitempty"`
+	Server      string      `json:"server"`
+	Inputs      []Input     `json:"inputs"`
+	Operations  []Operation `json:"operations"`
 }
 
 type Input struct {
-	Name        string
-	Description string
-	Default     *string
-	Choices     []string
-	Secret      bool
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Default     *string  `json:"default,omitempty"`
+	Choices     []string `json:"choices,omitempty"`
+	Secret      bool     `json:"secret,omitempty"`
 }
 
 type Endpoint struct {
@@ -38,144 +43,199 @@ type Endpoint struct {
 	Port int
 }
 
-type Omission struct {
-	Method string `json:"method"`
-	Path   string `json:"path"`
-	Reason string `json:"reason"`
+type Operation struct {
+	Name        string          `json:"name"`
+	Title       string          `json:"title,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Method      string          `json:"method"`
+	Path        string          `json:"path"`
+	InputSchema json.RawMessage `json:"inputSchema"`
+	Parameters  []Parameter     `json:"parameters,omitempty"`
+	Body        bool            `json:"body,omitempty"`
+	Security    Security        `json:"security,omitempty"`
 }
 
-func (o Omission) String() string {
-	return o.Method + " " + o.Path + ": " + o.Reason
+type Parameter struct {
+	Name    string   `json:"name"`
+	In      Location `json:"in"`
+	Explode bool     `json:"explode,omitempty"`
 }
 
-// Generate turns one OpenAPI document into a self-contained TypeScript project.
-// The caller supplies the bytes and, for relative server URLs, their HTTPS location.
-func Generate(ctx context.Context, data []byte, location *url.URL) (Project, error) {
-	doc, err := load(ctx, data)
-	if err != nil {
-		return Project{}, fmt.Errorf("load OpenAPI document: %w", err)
-	}
-	switch doc.OpenAPIMajorMinor() {
-	case "3.0", "3.1", "3.2":
-	default:
-		return Project{}, errors.New("expected an OpenAPI 3.0, 3.1, or 3.2 document")
-	}
-	if doc.Info == nil {
-		return Project{}, errors.New("OpenAPI document has no info object")
-	}
-	server, err := resolveServer(doc.Servers, location)
-	if err != nil {
-		return Project{}, err
-	}
+// Location is where an argument is sent, serialized in the style OpenAPI defines for it there:
+// simple in a path or header, form in a query or cookie, and deepObject for a query object.
+// https://spec.openapis.org/oas/v3.2.0.html#style-values
+type Location string
 
-	inputs := server.inputs
-	tools := map[string]operation{}
-	var omitted []Omission
-	paths := doc.Paths.Map()
-	for _, path := range slices.Sorted(maps.Keys(paths)) {
-		item := paths[path]
-		methods := item.Operations()
-		for _, method := range slices.Sorted(maps.Keys(methods)) {
-			tool, needed, err := compileOperation(doc, item, methods[method], method, path)
-			if existing, taken := tools[tool.Name]; err == nil && taken {
-				err = fmt.Errorf("tool name %q is already used by %s %s", tool.Name, existing.Method, existing.Path)
-			}
-			if err == nil {
-				err = addInputs(inputs, needed...)
-			}
-			if err != nil {
-				omitted = append(omitted, Omission{method, path, err.Error()})
-				continue
-			}
-			tools[tool.Name] = tool
-		}
-	}
-	if len(tools) == 0 {
-		err := errors.New("document has no supported operations")
-		if len(omitted) != 0 {
-			err = fmt.Errorf("%w (first omission: %s)", err, omitted[0])
-		}
-		return Project{}, err
-	}
-	model := generatedDocument{
-		Title: doc.Info.Title, Version: doc.Info.Version, Server: server.url, Variables: server.variables,
-	}
-	for _, name := range slices.Sorted(maps.Keys(tools)) {
-		model.Operations = append(model.Operations, tools[name])
-	}
-	document, err := json.Marshal(model)
-	if err != nil {
-		return Project{}, err
-	}
-	project := Project{
-		Files: map[string][]byte{
-			"document.json":     document,
-			"server.ts":         []byte(serverSource),
-			"package.json":      []byte(packageManifest),
-			"package-lock.json": []byte(packageLock),
-		},
-		Title: doc.Info.Title, Version: doc.Info.Version, Description: doc.Info.Description,
-		Endpoint: server.endpoint, Omitted: omitted,
-	}
-	for _, name := range slices.Sorted(maps.Keys(inputs)) {
-		project.Inputs = append(project.Inputs, inputs[name].Input)
-	}
-	return project, nil
-}
+const (
+	Path       Location = "path"
+	Header     Location = "header"
+	Query      Location = "query"
+	DeepObject Location = "deepObject"
+	Cookie     Location = "cookie"
+)
 
-func load(ctx context.Context, data []byte) (*openapi3.T, error) {
-	loader := openapi3.NewLoader()
-	loader.Context = ctx
-	if !json.Valid(data) {
-		return loader.LoadFromData(data)
+func (l *Location) UnmarshalText(text []byte) error {
+	*l = Location(text)
+	if !slices.Contains([]Location{Path, Header, Query, DeepObject, Cookie}, *l) {
+		return fmt.Errorf("unknown parameter location %q", text)
 	}
-	doc := &openapi3.T{}
-	if err := json.Unmarshal(data, doc); err != nil {
-		return nil, err
-	}
-	return doc, loader.ResolveRefsIn(doc, nil)
-}
-
-type generatedDocument struct {
-	Title      string      `json:"title"`
-	Version    string      `json:"version"`
-	Server     string      `json:"server"`
-	Variables  []variable  `json:"variables"`
-	Operations []operation `json:"operations"`
-}
-
-type input struct {
-	Input
-	source string
-}
-
-func addInputs(inputs map[string]input, values ...input) error {
-	claimed := map[string]input{}
-	for _, value := range values {
-		previous, exists := inputs[value.Name]
-		if !exists {
-			previous, exists = claimed[value.Name]
-		}
-		if exists && previous.source != value.source {
-			return fmt.Errorf("%s and %s both map to environment variable %s", previous.source, value.source, value.Name)
-		}
-		claimed[value.Name] = value
-	}
-	maps.Copy(inputs, claimed)
 	return nil
 }
 
-var envChars = regexp.MustCompile(`[^A-Z0-9]`)
-
-func envName(name string) string {
-	return "OM_" + envChars.ReplaceAllString(strings.ToUpper(name), "_")
+type Credential interface {
+	wire() credential
+	attach(*upstream, func(string) (string, bool)) error
 }
 
-//go:embed internal/emit/server.ts
-var serverSource string
+type APIKey struct {
+	In    Location
+	Name  string
+	Input string
+}
 
-//go:embed internal/emit/package.json
-var packageManifest string
+type Bearer struct {
+	Input string
+}
 
-//go:embed internal/emit/package-lock.json
-var packageLock string
+type Basic struct {
+	Username string
+	Password string
+}
+
+type Security []Credential
+
+type credential struct {
+	Kind     string   `json:"kind"`
+	In       Location `json:"in,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	Input    string   `json:"input,omitempty"`
+	Username string   `json:"username,omitempty"`
+	Password string   `json:"password,omitempty"`
+}
+
+func (k APIKey) wire() credential {
+	return credential{Kind: "apiKey", In: k.In, Name: k.Name, Input: k.Input}
+}
+func (b Bearer) wire() credential { return credential{Kind: "bearer", Input: b.Input} }
+func (b Basic) wire() credential {
+	return credential{Kind: "basic", Username: b.Username, Password: b.Password}
+}
+
+func (s Security) MarshalJSON() ([]byte, error) {
+	wire := make([]credential, len(s))
+	for i, c := range s {
+		wire[i] = c.wire()
+	}
+	return json.Marshal(wire)
+}
+
+func (s *Security) UnmarshalJSON(data []byte) error {
+	var wire []credential
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*s = make(Security, len(wire))
+	for i, c := range wire {
+		switch {
+		case c.Kind == "apiKey" && slices.Contains([]Location{Header, Query, Cookie}, c.In):
+			(*s)[i] = APIKey{c.In, c.Name, c.Input}
+		case c.Kind == "bearer":
+			(*s)[i] = Bearer{c.Input}
+		case c.Kind == "basic":
+			(*s)[i] = Basic{c.Username, c.Password}
+		default:
+			return fmt.Errorf("unknown credential %q in %q", c.Kind, c.In)
+		}
+	}
+	return nil
+}
+
+// Endpoint is the host and port Server reaches, derived from it.
+func (d Document) Endpoint() Endpoint {
+	authority, _, _ := strings.Cut(strings.TrimPrefix(d.Server, "https://"), "/")
+	address := url.URL{Host: authority}
+	port := 443
+	if address.Port() != "" {
+		port, _ = strconv.Atoi(address.Port())
+	}
+	return Endpoint{Host: address.Hostname(), Port: port}
+}
+
+// Handler serves the document's operations as MCP tools over Streamable HTTP, statelessly.
+// lookup supplies an input's value by name; transport carries the upstream requests.
+func (d Document) Handler(lookup func(name string) (string, bool), transport http.RoundTripper) (http.Handler, error) {
+	if d.Format != Format {
+		return nil, fmt.Errorf("model format %d is not served by this version of om, which serves format %d; compile the document again", d.Format, Format)
+	}
+	client := &http.Client{
+		Transport:     transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       30 * time.Second,
+	}
+	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return served{d, lookup, client}.server()
+	}, &mcp.StreamableHTTPOptions{
+		Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, Logger: slog.Default(),
+	}), nil
+}
+
+type served struct {
+	Document
+	lookup func(string) (string, bool)
+	client *http.Client
+}
+
+func (s served) server() *mcp.Server {
+	server := mcp.NewServer(&mcp.Implementation{Name: s.Title, Title: s.Title, Version: s.Version}, &mcp.ServerOptions{
+		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
+	})
+	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			switch request := request.(type) {
+			case *mcp.ListToolsRequest:
+				return s.list(request.Params)
+			case *mcp.CallToolRequest:
+				if i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name }); i >= 0 {
+					return s.call(ctx, s.Operations[i], request.Params.Arguments), nil
+				}
+			}
+			return next(ctx, method, request)
+		}
+	})
+	return server
+}
+
+const pageBytes = 256 << 10
+
+func (s served) list(params *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
+	start := 0
+	if params != nil && params.Cursor != "" {
+		var err error
+		start, err = strconv.Atoi(params.Cursor)
+		if err != nil || start <= 0 || start >= len(s.Operations) {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("invalid cursor %q", params.Cursor)}
+		}
+	}
+	result := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Cacheable: mcp.Cacheable{CacheScope: "public"}}
+	size := 0
+	for i, operation := range s.Operations[start:] {
+		size += len(operation.Name) + len(operation.Title) + len(operation.Description) + len(operation.InputSchema)
+		if i > 0 && size > pageBytes {
+			result.NextCursor = strconv.Itoa(start + i)
+			break
+		}
+		result.Tools = append(result.Tools, operation.tool())
+	}
+	return result, nil
+}
+
+func (o Operation) tool() *mcp.Tool {
+	tool := &mcp.Tool{Name: o.Name, Title: o.Title, Description: o.Description, InputSchema: o.InputSchema}
+	switch o.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		tool.Annotations = &mcp.ToolAnnotations{ReadOnlyHint: true}
+	case http.MethodPut, http.MethodDelete:
+		tool.Annotations = &mcp.ToolAnnotations{IdempotentHint: true}
+	}
+	return tool
+}

@@ -2,189 +2,172 @@ package om_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
-	"maps"
-	"net/url"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 
 	"github.com/holon-sh/om"
+	"github.com/holon-sh/om/compile"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestProjectContract(t *testing.T) {
-	data, err := os.ReadFile("testdata/widgets.yaml")
+func TestHandler(t *testing.T) {
+	upstreamCalls := make(chan *http.Request, 8)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contents, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		captured := r.Clone(r.Context())
+		captured.Body = io.NopCloser(bytes.NewReader(contents))
+		upstreamCalls <- captured
+		if strings.HasSuffix(r.URL.Path, "/redirect") {
+			http.Redirect(w, r, "/v1/widgets/elsewhere", http.StatusFound)
+			return
+		}
+		fmt.Fprint(w, "widget")
+	}))
+	defer upstream.Close()
+	fixture, err := os.ReadFile("testdata/widgets.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	project, err := om.Generate(t.Context(), data, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if project.Title != "Widgets" || project.Version != "1" {
-		t.Fatalf("wrong identity: %s, %s", project.Title, project.Version)
-	}
-	if project.Endpoint != (om.Endpoint{Host: "{OM_REGION}.example.test", Port: 443}) {
-		t.Fatalf("endpoint: %+v", project.Endpoint)
-	}
-	if len(project.Inputs) != 2 {
-		t.Fatalf("inputs: %+v", project.Inputs)
-	}
-	region, key := project.Inputs[0], project.Inputs[1]
-	if region.Name != "OM_REGION" || region.Secret || region.Default == nil || *region.Default != "us" || !slices.Equal(region.Choices, []string{"us", "eu"}) {
-		t.Fatalf("region input: %+v", region)
-	}
-	if key.Name != "OM_WIDGET_KEY" || !key.Secret || key.Default != nil {
-		t.Fatalf("key input: %+v", key)
-	}
-	if len(project.Omitted) != 1 || project.Omitted[0].Path != "/upload" || !strings.Contains(project.Omitted[0].Reason, "multipart/form-data") {
-		t.Fatalf("omissions: %+v", project.Omitted)
-	}
-	if actual := slices.Sorted(maps.Keys(project.Files)); !slices.Equal(actual, []string{"document.json", "package-lock.json", "package.json", "server.ts"}) {
-		t.Fatalf("project files: %q", actual)
-	}
-	second, err := om.Generate(t.Context(), data, nil)
-	if err != nil || !maps.EqualFunc(project.Files, second.Files, bytes.Equal) {
-		t.Fatalf("generate the same document twice: %v", err)
-	}
-}
-
-func TestDocumentBoundary(t *testing.T) {
-	const api = `
-info: {title: Widgets, version: '1'}
-servers: [{url: '../v2'}]
-paths:
-  /widgets:
-    get:
-      operationId: listWidgets
-      responses:
-        '200': {description: ok}
-components:
-  schemas:
-    Unused: {type: string, enum: [a], default: b, pattern: '(a)\1'}
-`
-	base := &url.URL{Scheme: "https", Host: "spec.example.test:8443", Path: "/api/specs/openapi.yaml"}
-	for _, version := range []string{"3.0.4", "3.1.1", "3.2.0"} {
-		t.Run(version, func(t *testing.T) {
-			project, err := om.Generate(t.Context(), []byte("openapi: "+version+api), base)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if project.Endpoint != (om.Endpoint{Host: "spec.example.test", Port: 8443}) {
-				t.Fatalf("endpoint: %+v", project.Endpoint)
-			}
-		})
-	}
-	for _, test := range []struct {
-		name string
-		doc  string
-		want string
-	}{
-		{"Swagger", "swagger: '2.0'" + api, "OpenAPI 3.0"},
-		{"No info", "openapi: '3.1.1'" + strings.Replace(api, "info:", "x-info:", 1), "info"},
-		{"HTTP server", "openapi: '3.1.1'" + strings.Replace(api, "../v2", "http://example.test", 1), "HTTPS"},
-		{"External reference", "openapi: '3.1.1'" + strings.Replace(api, "operationId: listWidgets", "requestBody: {$ref: 'https://example.test/body.yaml'}", 1), "external"},
-		{"No tools", "openapi: '3.1.1'" + strings.Replace(api, "get:\n", "trace:\n", 1), "no supported operations"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := om.Generate(t.Context(), []byte(test.doc), base)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("expected an error containing %q, got %v", test.want, err)
-			}
-		})
-	}
-}
-
-func TestOmissions(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		doc     string
-		omitted string
-	}{
-		{
-			"tool name already used",
-			`paths:
-  /first:
-    get:
-      operationId: "get:first"
-  /second:
-    get:
-      operationId: "get/first"
-`,
-			"GET /second",
-		},
-		{
-			"credential and server variable share an environment variable",
-			`paths:
-  /first:
-    get:
-      security: [{api_key: []}]
-  /second:
-    get: {}
-components:
-  securitySchemes:
-    api_key: {type: apiKey, name: X-Test, in: header}
-`,
-			"GET /first",
-		},
-		{
-			"parameters share a name across locations",
-			`paths:
-  /first/{id}:
-    get:
-      parameters:
-        - {name: id, in: path, required: true, schema: {type: string}}
-        - {name: id, in: query, schema: {type: string}}
-  /second:
-    get: {}
-`,
-			"GET /first/{id}",
-		},
-		{
-			"parameter named body beside a request body",
-			`paths:
-  /first:
-    post:
-      parameters: [{name: body, in: query, schema: {type: string}}]
-      requestBody: {content: {application/json: {schema: {type: object}}}}
-  /second:
-    get: {}
-`,
-			"POST /first",
-		},
-		{
-			"unsupported document schema dialect",
-			`jsonSchemaDialect: https://example.test/dialect
-paths:
-  /first:
-    get:
-      parameters: [{name: q, in: query, schema: {type: string}}]
-  /second:
-    get: {}
-`,
-			"GET /first",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			document := fmt.Sprintf(`openapi: '3.1.1'
-info: {title: Test, version: '1'}
-servers:
-  - url: 'https://{api-key}.example.test'
+	fixture = bytes.Replace(fixture, []byte(`  - url: https://{region}.example.test/v1
     variables:
-      api-key: {default: eu}
-%s`, test.doc)
-			project, err := om.Generate(t.Context(), []byte(document), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var omitted []string
-			for _, omission := range project.Omitted {
-				omitted = append(omitted, omission.Method+" "+omission.Path)
-			}
-			if !slices.Equal(omitted, []string{test.omitted}) {
-				t.Fatalf("omitted %q, want [%q]", omitted, test.omitted)
-			}
-		})
+      region:
+        default: us
+        enum: [us, eu]
+`), []byte("  - url: "+upstream.URL+"/{version}\n    variables:\n      version: {default: v1}\n"), 1)
+	fixture = bytes.Replace(fixture, []byte("      operationId: constructor\n"),
+		[]byte("      operationId: constructor\n      description: "+strings.Repeat("w", 256<<10)+"\n"), 1)
+	compiled, _, err := compile.Compile(t.Context(), fixture, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := json.Marshal(compiled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document om.Document
+	if err := json.Unmarshal(model, &document); err != nil {
+		t.Fatal(err)
+	}
+	lookup := func(name string) (string, bool) { return "test-key", name == "OM_WIDGET_KEY" }
+	if _, err := (om.Document{Format: om.Format + 1}).Handler(lookup, upstream.Client().Transport); err == nil {
+		t.Fatal("served a model format this version does not know")
+	}
+	for _, unknown := range []string{`{"parameters":[{"name":"id","in":"body"}]}`, `{"security":[{"kind":"oauth2"}]}`} {
+		if err := json.Unmarshal([]byte(unknown), &om.Operation{}); err == nil {
+			t.Fatalf("decoded an operation this version cannot serve: %s", unknown)
+		}
+	}
+	handler, err := document.Handler(lookup, upstream.Client().Transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	rebound, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebound.Host = "attacker.example"
+	response, err := http.DefaultClient.Do(rebound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("a loopback request for another host was answered with HTTP %d", response.StatusCode)
+	}
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).
+		Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	page, err := session.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Tools) != 1 || page.NextCursor == "" {
+		t.Fatalf("a page of tools/list went past 256 KiB of tool definitions: %d tools", len(page.Tools))
+	}
+	if _, err := session.ListTools(t.Context(), &mcp.ListToolsParams{Cursor: "unknown"}); err == nil {
+		t.Fatal("tools/list accepted a cursor it never issued")
+	}
+	var tools []*mcp.Tool
+	for tool, err := range session.Tools(t.Context(), nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		tools = append(tools, tool)
+	}
+	if len(tools) != 2 || tools[0].Name != "_constructor" || tools[1].Name != "update-widget" || !tools[0].Annotations.ReadOnlyHint {
+		t.Fatalf("tools/list: %+v", tools)
+	}
+	schema, err := json.Marshal(tools[0].InputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(schema, []byte(`"description":"Widget identifier"`)) {
+		t.Fatalf("parameter description did not reach the MCP schema: %s", schema)
+	}
+	if !bytes.Contains(schema, []byte(`"exclusiveMinimum":0`)) {
+		t.Fatalf("OpenAPI 3.0 bounds did not reach the MCP schema: %s", schema)
+	}
+
+	call := func(name string, arguments map[string]any) *mcp.CallToolResult {
+		t.Helper()
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: name, Arguments: arguments})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	callWidget := func(id string, min any) *mcp.CallToolResult {
+		t.Helper()
+		return call("_constructor", map[string]any{"id": id, "filter": map[string]any{"min": min, "category": nil}})
+	}
+	if result := callWidget("a/b", json.Number("2e6")); result.IsError || len(result.Content) != 1 || result.Content[0].(*mcp.TextContent).Text != "widget" {
+		t.Fatalf("tools/call: %+v", result)
+	}
+	select {
+	case request := <-upstreamCalls:
+		if request.Method != "GET" || request.URL.EscapedPath() != "/v1/widgets/a%2Fb" ||
+			request.URL.Query().Get("filter[min]") != "2000000" || request.Header.Get("X-Widget-Key") != "test-key" {
+			t.Fatalf("incorrect upstream request: %s %s", request.Method, request.URL)
+		}
+	default:
+		t.Fatal("successful tool call made no upstream request")
+	}
+	if result := callWidget("invalid", 0); !result.IsError || len(upstreamCalls) != 0 {
+		t.Fatalf("schema violation reached the upstream: %+v", result)
+	}
+	if result := callWidget("A1", 2); !result.IsError || len(upstreamCalls) != 0 {
+		t.Fatalf("pattern violation reached the upstream: %+v", result)
+	}
+	if result := call("update-widget", map[string]any{"id": "a", "body": map[string]string{"name": "next"}}); result.IsError {
+		t.Fatalf("JSON body rejected: %+v", result)
+	}
+	select {
+	case request := <-upstreamCalls:
+		body, err := io.ReadAll(request.Body)
+		if err != nil || request.Method != "POST" || string(body) != `{"name":"next"}` ||
+			request.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("incorrect upstream JSON request: %s %s: %v", request.Method, body, err)
+		}
+	default:
+		t.Fatal("successful update made no upstream request")
+	}
+	if result := callWidget("redirect", 1); !result.IsError || len(upstreamCalls) != 1 {
+		t.Fatalf("upstream redirect was followed or accepted: %+v", result)
 	}
 }

@@ -1,6 +1,7 @@
-package om
+package compile
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -10,45 +11,27 @@ import (
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/holon-sh/om"
 )
-
-type operation struct {
-	Name        string         `json:"name"`
-	Title       string         `json:"title,omitempty"`
-	Description string         `json:"description,omitempty"`
-	Method      string         `json:"method"`
-	Path        string         `json:"path"`
-	InputSchema map[string]any `json:"inputSchema"`
-	Parameters  []parameter    `json:"parameters"`
-	Body        bool           `json:"body"`
-	Security    []credentials  `json:"security"`
-}
-
-type parameter struct {
-	Name    string `json:"name"`
-	In      string `json:"in"`
-	Style   string `json:"style"`
-	Explode bool   `json:"explode"`
-}
 
 var toolNameChar = regexp.MustCompile(`[^A-Za-z0-9_.-]|^[.-]|[.-]$`)
 
-func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Operation, method, path string) (operation, []input, error) {
+func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Operation, method, path string) (om.Operation, []input, error) {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete, http.MethodPost, http.MethodPatch:
 	default:
-		return operation{}, nil, fmt.Errorf("HTTP method %s is unsupported", method)
+		return om.Operation{}, nil, fmt.Errorf("HTTP method %s is unsupported", method)
 	}
 	if len(item.Servers) != 0 || op.Servers != nil && len(*op.Servers) != 0 {
-		return operation{}, nil, errors.New("path- and operation-level servers are unsupported")
+		return om.Operation{}, nil, errors.New("path- and operation-level servers are unsupported")
 	}
 	auth, inputs, err := compileSecurity(doc, op)
 	if err != nil {
-		return operation{}, nil, err
+		return om.Operation{}, nil, err
 	}
-	tool := operation{
+	tool := om.Operation{
 		Name: toolName(op, method, path), Title: op.Summary, Description: op.Description, Method: method, Path: path,
-		Parameters: []parameter{}, Security: auth,
+		Security: auth,
 	}
 	builder := schemaBuilder{doc: doc, definitions: map[string]any{}}
 	properties := map[string]any{}
@@ -72,46 +55,51 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 		}
 		serialization, err := param.SerializationMethod()
 		if err != nil {
-			return operation{}, nil, err
+			return om.Operation{}, nil, err
 		}
 		if err := checkParameter(param, serialization); err != nil {
-			return operation{}, nil, err
+			return om.Operation{}, nil, err
 		}
 		shape, err := builder.convert(param.Schema)
 		if err != nil {
-			return operation{}, nil, fmt.Errorf("parameter %q: %w", param.Name, err)
+			return om.Operation{}, nil, fmt.Errorf("parameter %q: %w", param.Name, err)
 		}
 		if err := argument(param.Name, shape, param.Description, param.Required); err != nil {
-			return operation{}, nil, err
+			return om.Operation{}, nil, err
 		}
-		tool.Parameters = append(tool.Parameters, parameter{param.Name, param.In, serialization.Style, serialization.Explode})
+		in := om.Location(param.In)
+		if serialization.Style == openapi3.SerializationDeepObject {
+			in = om.DeepObject
+		}
+		tool.Parameters = append(tool.Parameters, om.Parameter{Name: param.Name, In: in, Explode: serialization.Explode})
 	}
 	if op.RequestBody != nil {
 		body := op.RequestBody.Value
 		content := body.Content["application/json"]
 		switch {
 		case content == nil:
-			return operation{}, nil, fmt.Errorf("request body media type %s is unsupported (only application/json is)", strings.Join(slices.Sorted(maps.Keys(body.Content)), ", "))
+			return om.Operation{}, nil, fmt.Errorf("request body media type %s is unsupported (only application/json is)", strings.Join(slices.Sorted(maps.Keys(body.Content)), ", "))
 		case method == http.MethodGet || method == http.MethodHead:
-			return operation{}, nil, fmt.Errorf("request bodies on %s are unsupported", method)
+			return om.Operation{}, nil, fmt.Errorf("request bodies on %s are unsupported", method)
 		}
 		shape, err := builder.convert(content.Schema)
 		if err != nil {
-			return operation{}, nil, fmt.Errorf("request body: %w", err)
+			return om.Operation{}, nil, fmt.Errorf("request body: %w", err)
 		}
 		if err := argument("body", shape, body.Description, body.Required); err != nil {
-			return operation{}, nil, err
+			return om.Operation{}, nil, err
 		}
 		tool.Body = true
 	}
-	tool.InputSchema = map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
+	schema := map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
 	if len(required) != 0 {
-		tool.InputSchema["required"] = required
+		schema["required"] = required
 	}
 	if len(builder.definitions) != 0 {
-		tool.InputSchema["$defs"] = builder.definitions
+		schema["$defs"] = builder.definitions
 	}
-	return tool, inputs, nil
+	tool.InputSchema, err = json.Marshal(schema)
+	return tool, inputs, err
 }
 
 // toolName follows the MCP tool name format: https://github.com/modelcontextprotocol/modelcontextprotocol/issues/986
@@ -181,60 +169,28 @@ func checkParameter(p *openapi3.Parameter, serialization *openapi3.Serialization
 	return fmt.Errorf("%s parameter %q uses style %s, which is unsupported", p.In, p.Name, style)
 }
 
-type credentialDestination struct {
-	location string
-	name     string
-}
-
-type credentials interface {
-	destination() credentialDestination
-}
-
-type apiKey struct {
-	Kind string `json:"kind"`
-	In   string `json:"in"`
-	Name string `json:"name"`
-	Env  string `json:"env"`
-}
-
-type bearer struct {
-	Kind string `json:"kind"`
-	Env  string `json:"env"`
-}
-
-type basic struct {
-	Kind        string `json:"kind"`
-	UsernameEnv string `json:"usernameEnv"`
-	PasswordEnv string `json:"passwordEnv"`
-}
-
-func (k apiKey) destination() credentialDestination {
-	name := k.Name
-	if k.In == "header" {
-		name = strings.ToLower(name)
+func destination(credential om.Credential) string {
+	key, ok := credential.(om.APIKey)
+	switch {
+	case !ok:
+		return "header authorization"
+	case key.In == om.Header:
+		return "header " + strings.ToLower(key.Name)
 	}
-	return credentialDestination{k.In, name}
+	return string(key.In) + " " + key.Name
 }
 
-func (bearer) destination() credentialDestination {
-	return credentialDestination{"header", "authorization"}
-}
-func (basic) destination() credentialDestination {
-	return credentialDestination{"header", "authorization"}
-}
-
-func compileSecurity(doc *openapi3.T, op *openapi3.Operation) ([]credentials, []input, error) {
+func compileSecurity(doc *openapi3.T, op *openapi3.Operation) (om.Security, []input, error) {
 	requirements := doc.Security
 	if op.Security != nil {
 		requirements = *op.Security
 	}
 	if len(requirements) == 0 {
-		return []credentials{}, nil, nil
+		return nil, nil, nil
 	}
 	for _, requirement := range requirements {
-		auth := make([]credentials, 0, len(requirement))
+		auth := make(om.Security, 0, len(requirement))
 		var inputs []input
-		destinations := map[credentialDestination]struct{}{}
 		for _, name := range slices.Sorted(maps.Keys(requirement)) {
 			if doc.Components == nil {
 				break
@@ -244,14 +200,9 @@ func compileSecurity(doc *openapi3.T, op *openapi3.Operation) ([]credentials, []
 				break
 			}
 			value, needed := compileScheme(name, ref.Value)
-			if value == nil {
+			if value == nil || slices.ContainsFunc(auth, func(c om.Credential) bool { return destination(c) == destination(value) }) {
 				break
 			}
-			destination := value.destination()
-			if _, exists := destinations[destination]; exists {
-				break
-			}
-			destinations[destination] = struct{}{}
 			auth = append(auth, value)
 			inputs = append(inputs, needed...)
 		}
@@ -262,10 +213,10 @@ func compileSecurity(doc *openapi3.T, op *openapi3.Operation) ([]credentials, []
 	return nil, nil, errors.New("no security requirement uses only API key, HTTP bearer or HTTP basic schemes")
 }
 
-func compileScheme(name string, scheme *openapi3.SecurityScheme) (credentials, []input) {
+func compileScheme(name string, scheme *openapi3.SecurityScheme) (om.Credential, []input) {
 	secret := func(suffix string) input {
 		return input{
-			Input:  Input{Name: envName(name) + suffix, Description: scheme.Description, Secret: true},
+			Input:  om.Input{Name: envName(name) + suffix, Description: scheme.Description, Secret: true},
 			source: "security scheme " + name + suffix,
 		}
 	}
@@ -285,13 +236,13 @@ func compileScheme(name string, scheme *openapi3.SecurityScheme) (credentials, [
 			return nil, nil
 		}
 		key := secret("")
-		return apiKey{"apiKey", scheme.In, scheme.Name, key.Name}, []input{key}
+		return om.APIKey{In: om.Location(scheme.In), Name: scheme.Name, Input: key.Name}, []input{key}
 	case scheme.Type == "http" && strings.EqualFold(scheme.Scheme, "bearer"):
 		token := secret("")
-		return bearer{"bearer", token.Name}, []input{token}
+		return om.Bearer{Input: token.Name}, []input{token}
 	case scheme.Type == "http" && strings.EqualFold(scheme.Scheme, "basic"):
 		user, password := secret("_USERNAME"), secret("_PASSWORD")
-		return basic{"basic", user.Name, password.Name}, []input{user, password}
+		return om.Basic{Username: user.Name, Password: password.Name}, []input{user, password}
 	}
 	return nil, nil
 }

@@ -1,61 +1,69 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/holon-sh/om"
+	"github.com/holon-sh/om/compile"
 )
 
 func main() {
-	if len(os.Args) != 4 || os.Args[1] != "generate" {
-		fmt.Fprintln(os.Stderr, "Usage: om generate <OpenAPI path or HTTPS URL> <new directory>")
+	if len(os.Args) != 3 || os.Args[1] != "serve" {
+		fmt.Fprintln(os.Stderr, "Usage: om serve <OpenAPI path or HTTPS URL>")
 		os.Exit(2)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	if err := generate(ctx, os.Args[2], os.Args[3]); err != nil {
+	if err := serve(context.Background(), os.Args[2]); err != nil {
 		fmt.Fprintln(os.Stderr, "om:", err)
 		os.Exit(1)
 	}
 }
 
-func generate(ctx context.Context, source, out string) error {
-	data, location, err := document(ctx, source)
+func serve(ctx context.Context, source string) error {
+	data, location, err := load(ctx, source)
 	if err != nil {
 		return err
 	}
-	project, err := om.Generate(ctx, data, location)
+	document, omitted, err := compile.Compile(ctx, data, location)
 	if err != nil {
 		return err
 	}
-	if err := writeProject(out, project.Files); err != nil {
-		return err
+	for _, omission := range omitted {
+		fmt.Fprintln(os.Stderr, "Skipped", omission)
 	}
-	for _, omitted := range project.Omitted {
-		fmt.Fprintln(os.Stderr, "Skipped", omitted)
-	}
-	for _, input := range project.Inputs {
-		if input.Secret {
+	for _, input := range document.Inputs {
+		if _, set := os.LookupEnv(input.Name); input.Secret && !set {
 			fmt.Fprintln(os.Stderr, "Set", input.Name, "to supply credentials for tools that need it.")
 		}
 	}
-	fmt.Printf("Generated %s\nRun npm ci and npm start in the project directory. MCP listens at http://127.0.0.1:3000/mcp.\n", out)
-	return nil
+	handler, err := document.Handler(os.LookupEnv, http.DefaultTransport)
+	if err != nil {
+		return err
+	}
+	host := cmp.Or(os.Getenv("HOST"), "127.0.0.1")
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, cmp.Or(os.Getenv("PORT"), "3000")))
+	if err != nil {
+		return err
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", handler)
+	port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+	fmt.Printf("MCP server listening at http://%s/mcp\n", net.JoinHostPort(host, port))
+	return http.Serve(listener, mux)
 }
 
 const documentLimit = 32 << 20
 
-func document(ctx context.Context, source string) ([]byte, *url.URL, error) {
+func load(ctx context.Context, source string) ([]byte, *url.URL, error) {
 	if !strings.Contains(source, "://") {
 		file, err := os.Open(source)
 		if err != nil {
@@ -100,21 +108,4 @@ func readDocument(reader io.Reader) ([]byte, error) {
 		return nil, errors.New("OpenAPI document exceeds 32 MiB")
 	}
 	return data, err
-}
-
-func writeProject(target string, files map[string][]byte) (err error) {
-	if err := os.Mkdir(target, 0755); err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, os.RemoveAll(target))
-		}
-	}()
-	for path, data := range files {
-		if err := os.WriteFile(filepath.Join(target, path), data, 0644); err != nil {
-			return err
-		}
-	}
-	return nil
 }

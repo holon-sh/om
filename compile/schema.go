@@ -1,4 +1,4 @@
-package om
+package compile
 
 import (
 	"bytes"
@@ -43,7 +43,9 @@ func (b schemaBuilder) normalize(value any) error {
 	if !ok {
 		return nil
 	}
-	delete(fields, "x-mcp-header")
+	for _, keyword := range []string{"x-mcp-header", "$recursiveAnchor", "$recursiveRef"} {
+		delete(fields, keyword)
+	}
 	if reference, ok := fields["$ref"].(string); ok {
 		reference, err := b.reference(reference)
 		if err != nil {

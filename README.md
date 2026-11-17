@@ -10,7 +10,7 @@
 
 ----
 
-`om` turns an OpenAPI document into a standalone TypeScript [MCP server](https://modelcontextprotocol.io/docs/learn/server-concepts), with one tool per API operation.
+`om` serves an OpenAPI document as an [MCP server](https://modelcontextprotocol.io/docs/learn/server-concepts), with one tool per API operation.
 
 ## Install
 
@@ -21,15 +21,28 @@ go install github.com/holon-sh/om/cmd/om@latest
 ## Usage
 
 ```sh
-om generate https://example.com/openapi.yaml my-api
-cd my-api
-npm ci
-npm start
+om serve https://example.com/openapi.yaml
 ```
 
-The server listens at `http://127.0.0.1:3000/mcp` and needs Node.js 22.18 or newer. `om generate` lists the environment variables that hold your API credentials and any operations it skipped.
+The server listens at `http://127.0.0.1:3000/mcp`; set `HOST` and `PORT` to change that. `om serve` lists any operations it skipped and the environment variables that hold your API credentials. Server variables default to the document's values; override one with `OM_` and its name in upper case.
 
 The server has no authentication of its own. Put it behind one before exposing it beyond localhost.
+
+## Embed
+
+Compile a document once, store the model, and serve it wherever you need it:
+
+```go
+document, skipped, err := compile.Compile(ctx, data, location)
+model, err := json.Marshal(document)
+
+var served om.Document
+err = json.Unmarshal(model, &served)
+handler, err := served.Handler(os.LookupEnv, http.DefaultTransport)
+http.Handle("/mcp", handler)
+```
+
+Only `compile` parses OpenAPI, which can take a few hundred MB for a large document. `Handler` needs only the model: `lookup` supplies credentials and server variables by name, and `transport` carries every request to the API. A request that reaches the handler over a loopback connection must carry a localhost `Host` header, which protects it from DNS rebinding. A handler is cheap to build, so a host can build one per request: a call reads only the called operation, and `tools/list` returns the tools in pages of about 256 KiB. It refuses a model whose `om` format it does not know.
 
 ## License
 
