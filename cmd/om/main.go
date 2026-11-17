@@ -38,7 +38,7 @@ func generate(ctx context.Context, source, out string) error {
 	if err != nil {
 		return err
 	}
-	project, err := om.Generate(ctx, data, location, om.Options{AppName: filepath.Base(target)})
+	project, err := om.Generate(ctx, data, location)
 	if err != nil {
 		return err
 	}

@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -35,37 +36,32 @@ func resolveServer(servers openapi3.Servers, location *url.URL) (resolvedServer,
 		server = servers[0]
 	}
 	result := resolvedServer{variables: []variable{}, inputs: map[string]input{}}
-	markers := map[string]string{}
-	var tokens, original []string
+	var withMarkers, withDefaults, withNames, withEnv []string
 	for _, match := range placeholder.FindAllStringSubmatch(server.URL, -1) {
 		name := match[1]
-		if _, exists := markers[name]; exists {
+		if slices.ContainsFunc(result.variables, func(v variable) bool { return v.Name == name }) {
 			continue
 		}
 		declared := server.Variables[name]
 		if declared == nil {
 			return resolvedServer{}, fmt.Errorf("server URL variable %q is undeclared", name)
 		}
-		if strings.ContainsAny(declared.Default, "\r\n\x00") {
-			return resolvedServer{}, fmt.Errorf("server URL variable %q has an invalid default", name)
-		}
-		marker := fmt.Sprintf("om-variable-%d-slot", len(markers))
-		for strings.Contains(server.URL, marker) || location != nil && strings.Contains(location.String(), marker) {
-			marker += "x"
-		}
-		markers[name] = marker
-		tokens = append(tokens, match[0], marker)
-		original = append(original, marker, match[0])
-		variable := variable{Name: name, Env: envName(name), Default: declared.Default, Allowed: declared.Enum}
-		result.variables = append(result.variables, variable)
-		if err := addInput(result.inputs, input{
-			Input:  Input{Name: variable.Env, Description: declared.Description, Default: &declared.Default, Choices: declared.Enum},
+		v := variable{Name: name, Env: envName(name), Default: declared.Default, Allowed: declared.Enum}
+		err := addInputs(result.inputs, input{
+			Input:  Input{Name: v.Env, Description: declared.Description, Default: &declared.Default, Choices: declared.Enum},
 			source: "server variable " + name,
-		}); err != nil {
+		})
+		if err != nil {
 			return resolvedServer{}, err
 		}
+		marker := fmt.Sprintf("om-variable-%d", len(result.variables))
+		result.variables = append(result.variables, v)
+		withMarkers = append(withMarkers, match[0], marker)
+		withDefaults = append(withDefaults, marker, v.Default)
+		withNames = append(withNames, marker, match[0])
+		withEnv = append(withEnv, marker, "{"+v.Env+"}")
 	}
-	address, err := url.Parse(strings.NewReplacer(tokens...).Replace(server.URL))
+	address, err := url.Parse(strings.NewReplacer(withMarkers...).Replace(server.URL))
 	if err != nil {
 		return resolvedServer{}, errors.New("invalid OpenAPI server URL")
 	}
@@ -84,28 +80,11 @@ func resolveServer(servers openapi3.Servers, location *url.URL) (resolvedServer,
 		}
 	}
 	host := strings.ToLower(address.Hostname())
-	for _, v := range result.variables {
-		marker := markers[v.Name]
-		if !strings.Contains(host, marker) {
-			continue
-		}
-		if !validHostname(v.Default) {
-			return resolvedServer{}, fmt.Errorf("server hostname variable %q has an invalid default", v.Name)
-		}
-		for _, value := range v.Allowed {
-			if !validHostname(value) {
-				return resolvedServer{}, fmt.Errorf("server hostname variable %q has an invalid choice", v.Name)
-			}
-		}
-	}
-	if !validHostname(host) {
+	if !validHostname(strings.NewReplacer(withDefaults...).Replace(host)) {
 		return resolvedServer{}, errors.New("OpenAPI server has an invalid hostname")
 	}
-	for _, v := range result.variables {
-		host = strings.ReplaceAll(host, markers[v.Name], "{"+v.Env+"}")
-	}
-	result.url = strings.NewReplacer(original...).Replace(address.String())
-	result.endpoint = Endpoint{Host: host, Port: port}
+	result.url = strings.NewReplacer(withNames...).Replace(address.String())
+	result.endpoint = Endpoint{Host: strings.NewReplacer(withEnv...).Replace(host), Port: port}
 	return result, nil
 }
 

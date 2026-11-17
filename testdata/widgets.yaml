@@ -17,14 +17,18 @@ paths:
       - name: id
         in: path
         required: true
+        description: Widget identifier
         schema:
           type: string
+          pattern: '^[a-z/\:]+$'
     get:
       operationId: constructor
       parameters:
         - name: filter
           in: query
           style: deepObject
+          allowEmptyValue: true
+          allowReserved: true
           schema:
             $ref: '#/components/schemas/Filter'
       responses:
@@ -43,6 +47,7 @@ paths:
               properties:
                 name:
                   type: string
+                  pattern: '(?i)^next$'
       responses:
         '200':
           description: Updated
