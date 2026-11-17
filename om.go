@@ -195,11 +195,9 @@ func (s served) server() *mcp.Server {
 			case *mcp.ListToolsRequest:
 				return s.list(request.Params)
 			case *mcp.CallToolRequest:
-				i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name })
-				if i < 0 {
-					return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unknown tool %q", request.Params.Name)}
+				if i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name }); i >= 0 {
+					return s.call(ctx, s.Operations[i], request.Params.Arguments), nil
 				}
-				return s.call(ctx, s.Operations[i], request.Params.Arguments), nil
 			}
 			return next(ctx, method, request)
 		}
@@ -220,10 +218,10 @@ func (s served) list(params *mcp.ListToolsParams) (*mcp.ListToolsResult, error) 
 	}
 	result := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Cacheable: mcp.Cacheable{CacheScope: "public"}}
 	size := 0
-	for _, operation := range s.Operations[start:] {
+	for i, operation := range s.Operations[start:] {
 		size += len(operation.Name) + len(operation.Title) + len(operation.Description) + len(operation.InputSchema)
-		if len(result.Tools) != 0 && size > pageBytes {
-			result.NextCursor = strconv.Itoa(start + len(result.Tools))
+		if i > 0 && size > pageBytes {
+			result.NextCursor = strconv.Itoa(start + i)
 			break
 		}
 		result.Tools = append(result.Tools, operation.tool())
