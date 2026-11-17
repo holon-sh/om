@@ -73,6 +73,19 @@ func TestHandler(t *testing.T) {
 	}
 	server := httptest.NewServer(handler)
 	defer server.Close()
+	rebound, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebound.Host = "attacker.example"
+	response, err := http.DefaultClient.Do(rebound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("a loopback request for another host was answered with HTTP %d", response.StatusCode)
+	}
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).
 		Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: server.URL}, nil)
 	if err != nil {
@@ -119,17 +132,17 @@ func TestHandler(t *testing.T) {
 		}
 		return result
 	}
-	callWidget := func(id string, min int) *mcp.CallToolResult {
+	callWidget := func(id string, min any) *mcp.CallToolResult {
 		t.Helper()
 		return call("_constructor", map[string]any{"id": id, "filter": map[string]any{"min": min, "category": nil}})
 	}
-	if result := callWidget("a/b", 2); result.IsError || len(result.Content) != 1 || result.Content[0].(*mcp.TextContent).Text != "widget" {
+	if result := callWidget("a/b", json.Number("2e6")); result.IsError || len(result.Content) != 1 || result.Content[0].(*mcp.TextContent).Text != "widget" {
 		t.Fatalf("tools/call: %+v", result)
 	}
 	select {
 	case request := <-upstreamCalls:
 		if request.Method != "GET" || request.URL.EscapedPath() != "/v1/widgets/a%2Fb" ||
-			request.URL.Query().Get("filter[min]") != "2" || request.Header.Get("X-Widget-Key") != "test-key" {
+			request.URL.Query().Get("filter[min]") != "2000000" || request.Header.Get("X-Widget-Key") != "test-key" {
 			t.Fatalf("incorrect upstream request: %s %s", request.Method, request.URL)
 		}
 	default:

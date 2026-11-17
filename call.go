@@ -40,7 +40,8 @@ func (s served) call(ctx context.Context, o Operation, arguments json.RawMessage
 	if err != nil {
 		return failure(refusal(fmt.Sprintf("The input schema of tool %s is not valid JSON Schema 2020-12: %v", o.Name, err)))
 	}
-	values, err := jsonschema.UnmarshalJSON(bytes.NewReader(arguments))
+	var values any
+	err = json.Unmarshal(arguments, &values)
 	if err == nil {
 		err = schema.Validate(values)
 	}
@@ -234,9 +235,12 @@ type argument struct {
 func argumentOf(value any, escape func(string) string) (argument, error) {
 	var result argument
 	scalar := func(part any) (string, error) {
-		switch part.(type) {
+		switch part := part.(type) {
 		case []any, map[string]any:
 			return "", refusal("Parameters must be scalars or flat collections.")
+		case float64:
+			number, err := json.Marshal(part)
+			return escape(string(number)), err
 		}
 		return escape(fmt.Sprint(part)), nil
 	}

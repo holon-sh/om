@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -57,24 +56,9 @@ func serve(ctx context.Context, source string) error {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", handler)
-	var root http.Handler = mux
-	if local(host) {
-		root = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			origin, err := url.Parse(r.Header.Get("Origin"))
-			if !local((&url.URL{Host: r.Host}).Hostname()) || err != nil || r.Header.Get("Origin") != "" && !local(origin.Hostname()) {
-				http.Error(w, "Forbidden", http.StatusForbidden)
-				return
-			}
-			mux.ServeHTTP(w, r)
-		})
-	}
 	port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
 	fmt.Printf("MCP server listening at http://%s/mcp\n", net.JoinHostPort(host, port))
-	return http.Serve(listener, root)
-}
-
-func local(hostname string) bool {
-	return slices.Contains([]string{"127.0.0.1", "::1", "localhost"}, hostname)
+	return http.Serve(listener, mux)
 }
 
 const documentLimit = 32 << 20

@@ -175,7 +175,7 @@ func (d Document) Handler(lookup func(name string) (string, bool), transport htt
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return served{d, lookup, client}.server()
 	}, &mcp.StreamableHTTPOptions{
-		Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, DisableLocalhostProtection: true, Logger: slog.Default(),
+		Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, Logger: slog.Default(),
 	}), nil
 }
 
