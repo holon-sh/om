@@ -97,9 +97,6 @@ func (d Document) send(ctx context.Context, o Operation, values map[string]any, 
 		return nil, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode >= 300 && response.StatusCode < 400 {
-		return nil, refusal(fmt.Sprintf("Upstream returned HTTP %d. Redirects are disabled.", response.StatusCode))
-	}
 	text, err := responseText(response)
 	switch {
 	case err != nil:

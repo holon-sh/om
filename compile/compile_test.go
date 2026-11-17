@@ -12,25 +12,25 @@ import (
 	"github.com/holon-sh/om/compile"
 )
 
-func TestProjectContract(t *testing.T) {
-	data, err := os.ReadFile("testdata/widgets.yaml")
+func TestCompile(t *testing.T) {
+	data, err := os.ReadFile("../testdata/widgets.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	project, omitted, err := compile.Compile(t.Context(), data, nil)
+	document, omitted, err := compile.Compile(t.Context(), data, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if project.Title != "Widgets" || project.Version != "1" {
-		t.Fatalf("wrong identity: %s, %s", project.Title, project.Version)
+	if document.Title != "Widgets" || document.Version != "1" {
+		t.Fatalf("wrong identity: %s, %s", document.Title, document.Version)
 	}
-	if project.Endpoint() != (om.Endpoint{Host: "{OM_REGION}.example.test", Port: 443}) {
-		t.Fatalf("endpoint: %+v", project.Endpoint())
+	if document.Endpoint() != (om.Endpoint{Host: "{OM_REGION}.example.test", Port: 443}) {
+		t.Fatalf("endpoint: %+v", document.Endpoint())
 	}
-	if len(project.Inputs) != 2 {
-		t.Fatalf("inputs: %+v", project.Inputs)
+	if len(document.Inputs) != 2 {
+		t.Fatalf("inputs: %+v", document.Inputs)
 	}
-	region, key := project.Inputs[0], project.Inputs[1]
+	region, key := document.Inputs[0], document.Inputs[1]
 	if region.Name != "OM_REGION" || region.Secret || region.Default == nil || *region.Default != "us" || !slices.Equal(region.Choices, []string{"us", "eu"}) {
 		t.Fatalf("region input: %+v", region)
 	}
@@ -59,12 +59,12 @@ components:
 	base := &url.URL{Scheme: "https", Host: "spec.example.test:8443", Path: "/api/specs/openapi.yaml"}
 	for _, version := range []string{"3.0.4", "3.1.1", "3.2.0"} {
 		t.Run(version, func(t *testing.T) {
-			project, _, err := compile.Compile(t.Context(), []byte("openapi: "+version+api), base)
+			document, _, err := compile.Compile(t.Context(), []byte("openapi: "+version+api), base)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if project.Endpoint() != (om.Endpoint{Host: "spec.example.test", Port: 8443}) {
-				t.Fatalf("endpoint: %+v", project.Endpoint())
+			if document.Endpoint() != (om.Endpoint{Host: "spec.example.test", Port: 8443}) {
+				t.Fatalf("endpoint: %+v", document.Endpoint())
 			}
 		})
 	}

@@ -2,7 +2,7 @@ openapi: 3.0.4
 info:
   title: Widgets
   version: '1'
-  description: Example API for the generator
+  description: Example API
 servers:
   - url: https://{region}.example.test/v1
     variables:
@@ -47,7 +47,7 @@ paths:
               properties:
                 name:
                   type: string
-                  pattern: '(?i)^next$'
+                  pattern: '^(?!\s)'
       responses:
         '200':
           description: Updated
@@ -71,6 +71,7 @@ components:
   schemas:
     Filter:
       type: object
+      $recursiveAnchor: true
       properties:
         min:
           $ref: '#/components/schemas/Bounds/properties/minimum%25'
