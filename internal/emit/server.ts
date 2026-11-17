@@ -1,10 +1,14 @@
 import { Buffer } from "node:buffer";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { localhostHostValidation, localhostOriginValidation, toNodeHandler } from "@modelcontextprotocol/node";
 import {
   createMcpHandler, fromJsonSchema, McpServer,
   type CallToolResult, type JSONObject, type JSONValue, type ToolAnnotations,
 } from "@modelcontextprotocol/server";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/server/validators/ajv";
+import { Ajv2020 } from "ajv/dist/2020.js";
 
 type Method = "DELETE" | "GET" | "HEAD" | "OPTIONS" | "PATCH" | "POST" | "PUT";
 type Parameter = { name: string; explode: boolean } & (
@@ -24,23 +28,23 @@ type Operation = {
   path: string;
   inputSchema: JSONObject;
   parameters: Parameter[];
+  body: boolean;
   security: Credential[];
 };
 type GeneratedDocument = {
-  name: string;
+  title: string;
   version: string;
   server: string;
-  variables: { name: string; env: string; default: string; allowed?: string[] }[];
+  variables: { env: string; default: string; allowed?: string[] }[];
   operations: Operation[];
 };
-type Arguments = Partial<Record<Parameter["in"], JSONObject>> & { body?: JSONValue };
 type Pair = [name: string, value: string];
 type ParameterValue =
   | { kind: "scalar"; value: string }
   | { kind: "array"; values: string[] }
   | { kind: "object"; entries: Pair[] };
 
-const document: GeneratedDocument = /*OM_DOCUMENT*/;
+const document: GeneratedDocument = JSON.parse(readFileSync(new URL("document.json", import.meta.url), "utf8"));
 const annotations = {
   DELETE: { idempotentHint: true },
   GET: { readOnlyHint: true },
@@ -51,59 +55,62 @@ const annotations = {
   PUT: { idempotentHint: true },
 } satisfies Record<Method, ToolAnnotations>;
 
+const unenforcedPattern = { test: () => true };
+const validator = new AjvJsonSchemaValidator(new Ajv2020({
+  strict: false,
+  allErrors: true,
+  validateSchema: false,
+  validateFormats: false,
+  unicodeRegExp: false,
+  code: {
+    regExp: Object.assign((pattern: string, flags: string) => {
+      try {
+        return new RegExp(pattern, flags);
+      } catch {
+        return unenforcedPattern;
+      }
+    }, { code: "unenforcedPattern" }),
+  },
+}));
+const tools = document.operations.map(operation => ({
+  operation,
+  inputSchema: fromJsonSchema<JSONObject>(operation.inputSchema, validator),
+}));
+
 const handler = createMcpHandler(() => {
-  const server = new McpServer({ name: document.name, version: document.version });
-  for (const operation of document.operations) {
+  const server = new McpServer({ name: document.title, title: document.title, version: document.version });
+  for (const { operation, inputSchema } of tools) {
     server.registerTool(operation.name, {
       title: operation.title,
       description: operation.description,
       annotations: annotations[operation.method],
-      inputSchema: fromJsonSchema<Arguments>(operation.inputSchema),
+      inputSchema,
     }, (args, context) => call(operation, args, context.mcpReq.signal));
   }
   return server;
+}, { onerror: console.error });
+
+const host = process.env.HOST ?? "127.0.0.1";
+const loopback = ["127.0.0.1", "::1", "localhost"].includes(host);
+const serve = toNodeHandler(handler, { onerror: console.error });
+const validateHost = localhostHostValidation();
+const validateOrigin = localhostOriginValidation();
+const server = createServer((request, response) => {
+  if (loopback && (!validateHost(request, response) || !validateOrigin(request, response))) return;
+  if (request.url?.split("?", 1)[0] === "/mcp") {
+    void serve(request, response);
+  } else {
+    response.writeHead(404).end();
+  }
 });
-
-export default handler;
-
-if (import.meta.main) {
-  const host = process.env.HOST ?? "127.0.0.1";
-  const portText = process.env.PORT ?? "3000";
-  const port = Number(portText);
-  const loopback = ["127.0.0.1", "::1", "localhost"].includes(host);
-  if (!loopback && host !== "0.0.0.0" && host !== "::") {
-    throw new Error("HOST must be 127.0.0.1, ::1, localhost, 0.0.0.0, or ::.");
-  }
-  if (!/^\d+$/.test(portText) || port > 65_535) {
-    throw new Error("PORT must be an integer between 0 and 65535.");
-  }
-
-  const serve = toNodeHandler(handler);
-  const validateHost = localhostHostValidation();
-  const validateOrigin = localhostOriginValidation();
-  const server = createServer((request, response) => {
-    if (loopback && (!validateHost(request, response) || !validateOrigin(request, response))) return;
-    const path = request.url?.split("?", 1)[0] ?? "";
-    if (request.method === "HEAD" && path === "/") {
-      response.writeHead(200).end();
-    } else if (path === "/mcp") {
-      void serve(request, response);
-    } else {
-      response.writeHead(404).end();
-    }
-  });
-  server.listen(port, host, () => {
-    const address = server.address();
-    if (address && typeof address === "object") {
-      const hostname = host.includes(":") ? `[${host}]` : host;
-      process.stdout.write(`MCP server listening at http://${hostname}:${address.port}/mcp\n`);
-    }
-  });
-}
+server.listen(Number(process.env.PORT ?? 3000), host, () => {
+  const { port } = server.address() as AddressInfo;
+  process.stdout.write(`MCP server listening at http://${host.includes(":") ? `[${host}]` : host}:${port}/mcp\n`);
+});
 
 class RequestFailure extends Error {}
 
-async function call(operation: Operation, args: Arguments, signal: AbortSignal): Promise<CallToolResult> {
+async function call(operation: Operation, args: JSONObject, signal: AbortSignal): Promise<CallToolResult> {
   try {
     const response = await fetch(upstreamRequest(operation, args, signal));
     if (response.status >= 300 && response.status < 400) {
@@ -118,16 +125,15 @@ async function call(operation: Operation, args: Arguments, signal: AbortSignal):
   }
 }
 
-function upstreamRequest(operation: Operation, args: Arguments, signal: AbortSignal): Request {
+function upstreamRequest(operation: Operation, args: JSONObject, signal: AbortSignal): Request {
   const url = serverURL();
   const pathValues = new Map<string, string>();
   const query = new Map<string, string[]>();
   const cookies = new Map<string, string[]>();
   const headers = new Headers();
   for (const parameter of operation.parameters) {
-    const group = args[parameter.in];
-    if (!group || !Object.hasOwn(group, parameter.name)) continue;
-    const value = parameterValue(group[parameter.name], parameter.in === "header" ? String : encode);
+    if (!Object.hasOwn(args, parameter.name)) continue;
+    const value = parameterValue(args[parameter.name], parameter.in === "header" ? String : encode);
     if (!value) continue;
     switch (parameter.in) {
       case "path":
@@ -190,7 +196,7 @@ function upstreamRequest(operation: Operation, args: Arguments, signal: AbortSig
   url.search = joinPairs(query, "&");
   if (cookies.size) headers.set("Cookie", joinPairs(cookies, "; "));
   let body: string | undefined;
-  if (args.body !== undefined) {
+  if (operation.body && args.body !== undefined) {
     body = JSON.stringify(args.body);
     headers.set("Content-Type", "application/json");
   }
@@ -207,12 +213,10 @@ function serverURL(): URL {
     if ((variable.allowed && !variable.allowed.includes(value)) || value === "." || value === "..") {
       throw new RequestFailure(`Environment variable ${variable.env} is not a permitted server value.`);
     }
-    server = server.replaceAll(`{${variable.name}}`, encode(value));
+    server = server.replaceAll(`{${variable.env}}`, encode(value));
   }
   const url = URL.parse(server);
-  if (!url || url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
-    throw new RequestFailure("The API server URL must use HTTPS without credentials, query, or fragment.");
-  }
+  if (!url) throw new RequestFailure("The server variables do not form a valid API server URL.");
   return url;
 }
 

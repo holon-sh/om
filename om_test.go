@@ -2,8 +2,6 @@ package om_test
 
 import (
 	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"net/url"
@@ -20,12 +18,12 @@ func TestProjectContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	project, err := om.Generate(t.Context(), data, nil, om.Options{AppName: "widgets"})
+	project, err := om.Generate(t.Context(), data, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if project.Name != "widgets" || project.Title != "Widgets" || project.Version != "1" {
-		t.Fatalf("wrong identity: %s, %s, %s", project.Name, project.Title, project.Version)
+	if project.Title != "Widgets" || project.Version != "1" {
+		t.Fatalf("wrong identity: %s, %s", project.Title, project.Version)
 	}
 	if project.Endpoint != (om.Endpoint{Host: "{OM_REGION}.example.test", Port: 443}) {
 		t.Fatalf("endpoint: %+v", project.Endpoint)
@@ -40,23 +38,13 @@ func TestProjectContract(t *testing.T) {
 	if key.Name != "OM_WIDGET_KEY" || !key.Secret || key.Default != nil {
 		t.Fatalf("key input: %+v", key)
 	}
-	if len(project.Omitted) != 1 || project.Omitted[0].Path != "/upload" || !strings.Contains(project.Omitted[0].Reason, "request body") {
+	if len(project.Omitted) != 1 || project.Omitted[0].Path != "/upload" || !strings.Contains(project.Omitted[0].Reason, "multipart/form-data") {
 		t.Fatalf("omissions: %+v", project.Omitted)
 	}
-	if actual := slices.Sorted(maps.Keys(project.Files)); !slices.Equal(actual, []string{"package-lock.json", "package.json", "server.ts"}) {
+	if actual := slices.Sorted(maps.Keys(project.Files)); !slices.Equal(actual, []string{"document.json", "package-lock.json", "package.json", "server.ts"}) {
 		t.Fatalf("project files: %q", actual)
 	}
-	var pkg struct {
-		Name         string
-		Dependencies map[string]string
-	}
-	if err := json.Unmarshal(project.Files["package.json"], &pkg); err != nil {
-		t.Fatal(err)
-	}
-	if pkg.Name != "widgets" || len(pkg.Dependencies) != 2 || pkg.Dependencies["@modelcontextprotocol/server"] == "" || pkg.Dependencies["@modelcontextprotocol/node"] == "" {
-		t.Fatalf("portable package: %+v", pkg)
-	}
-	second, err := om.Generate(t.Context(), data, nil, om.Options{AppName: "widgets"})
+	second, err := om.Generate(t.Context(), data, nil)
 	if err != nil || !maps.EqualFunc(project.Files, second.Files, bytes.Equal) {
 		t.Fatalf("generate the same document twice: %v", err)
 	}
@@ -72,11 +60,14 @@ paths:
       operationId: listWidgets
       responses:
         '200': {description: ok}
+components:
+  schemas:
+    Unused: {type: string, enum: [a], default: b, pattern: '(a)\1'}
 `
 	base := &url.URL{Scheme: "https", Host: "spec.example.test:8443", Path: "/api/specs/openapi.yaml"}
 	for _, version := range []string{"3.0.4", "3.1.1", "3.2.0"} {
 		t.Run(version, func(t *testing.T) {
-			project, err := om.Generate(t.Context(), []byte("openapi: "+version+api), base, om.Options{AppName: "widgets"})
+			project, err := om.Generate(t.Context(), []byte("openapi: "+version+api), base)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -91,13 +82,13 @@ paths:
 		want string
 	}{
 		{"Swagger", "swagger: '2.0'" + api, "OpenAPI 3.0"},
+		{"No info", "openapi: '3.1.1'" + strings.Replace(api, "info:", "x-info:", 1), "info"},
 		{"HTTP server", "openapi: '3.1.1'" + strings.Replace(api, "../v2", "http://example.test", 1), "HTTPS"},
 		{"External reference", "openapi: '3.1.1'" + strings.Replace(api, "operationId: listWidgets", "requestBody: {$ref: 'https://example.test/body.yaml'}", 1), "external"},
-		{"Schema dialect", "openapi: '3.1.1'\njsonSchemaDialect: https://example.test/dialect" + api, "dialect is unsupported"},
 		{"No tools", "openapi: '3.1.1'" + strings.Replace(api, "get:\n", "trace:\n", 1), "no supported operations"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := om.Generate(context.Background(), []byte(test.doc), base, om.Options{AppName: "widgets"})
+			_, err := om.Generate(t.Context(), []byte(test.doc), base)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("expected an error containing %q, got %v", test.want, err)
 			}
@@ -105,15 +96,15 @@ paths:
 	}
 }
 
-func TestNamesDoNotSilentlyCollide(t *testing.T) {
+func TestOmissions(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		doc  string
+		name    string
+		doc     string
+		omitted string
 	}{
 		{
-			"tool names",
-			`servers: [{url: 'https://example.test'}]
-paths:
+			"tool name already used",
+			`paths:
   /first:
     get:
       operationId: "get:first"
@@ -121,28 +112,78 @@ paths:
     get:
       operationId: "get/first"
 `,
+			"GET /second",
 		},
 		{
-			"credential and server variable",
-			`servers:
-  - url: 'https://{api-key}.example.test'
-    variables:
-      api-key: {default: eu}
-paths:
+			"credential and server variable share an environment variable",
+			`paths:
   /first:
     get:
       security: [{api_key: []}]
+  /second:
+    get: {}
 components:
   securitySchemes:
     api_key: {type: apiKey, name: X-Test, in: header}
 `,
+			"GET /first",
+		},
+		{
+			"parameters share a name across locations",
+			`paths:
+  /first/{id}:
+    get:
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: id, in: query, schema: {type: string}}
+  /second:
+    get: {}
+`,
+			"GET /first/{id}",
+		},
+		{
+			"parameter named body beside a request body",
+			`paths:
+  /first:
+    post:
+      parameters: [{name: body, in: query, schema: {type: string}}]
+      requestBody: {content: {application/json: {schema: {type: object}}}}
+  /second:
+    get: {}
+`,
+			"POST /first",
+		},
+		{
+			"unsupported document schema dialect",
+			`jsonSchemaDialect: https://example.test/dialect
+paths:
+  /first:
+    get:
+      parameters: [{name: q, in: query, schema: {type: string}}]
+  /second:
+    get: {}
+`,
+			"GET /first",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			document := fmt.Sprintf("openapi: '3.1.1'\ninfo: {title: Test, version: '1'}\n%s", test.doc)
-			_, err := om.Generate(t.Context(), []byte(document), nil, om.Options{AppName: "test"})
-			if err == nil || !strings.Contains(err.Error(), "map to") {
-				t.Fatalf("expected a collision, got %v", err)
+			document := fmt.Sprintf(`openapi: '3.1.1'
+info: {title: Test, version: '1'}
+servers:
+  - url: 'https://{api-key}.example.test'
+    variables:
+      api-key: {default: eu}
+%s`, test.doc)
+			project, err := om.Generate(t.Context(), []byte(document), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var omitted []string
+			for _, omission := range project.Omitted {
+				omitted = append(omitted, omission.Method+" "+omission.Path)
+			}
+			if !slices.Equal(omitted, []string{test.omitted}) {
+				t.Fatalf("omitted %q, want [%q]", omitted, test.omitted)
 			}
 		})
 	}

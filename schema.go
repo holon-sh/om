@@ -13,8 +13,6 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 )
 
-type schema map[string]any
-
 type schemaBuilder struct {
 	doc         *openapi3.T
 	definitions map[string]any
@@ -22,7 +20,7 @@ type schemaBuilder struct {
 
 func (b schemaBuilder) convert(ref *openapi3.SchemaRef) (any, error) {
 	if ref == nil {
-		return true, nil
+		return map[string]any{}, nil
 	}
 	data, err := json.Marshal(ref)
 	if err != nil {
@@ -33,6 +31,9 @@ func (b schemaBuilder) convert(ref *openapi3.SchemaRef) (any, error) {
 	var value any
 	if err := decoder.Decode(&value); err != nil {
 		return nil, err
+	}
+	if fields, ok := value.(map[string]any); ok && fields["$schema"] == nil {
+		fields["$schema"] = b.doc.JSONSchemaDialect
 	}
 	return value, b.normalize(value)
 }
@@ -60,7 +61,7 @@ func (b schemaBuilder) normalize(value any) error {
 	}
 	if dialect, ok := fields["$schema"].(string); ok {
 		if !supportedDialect(dialect) {
-			return errors.New("schema dialect is unsupported")
+			return fmt.Errorf("schema dialect %s is unsupported", dialect)
 		}
 		delete(fields, "$schema")
 	}

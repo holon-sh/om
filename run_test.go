@@ -50,8 +50,8 @@ func TestGeneratedServer(t *testing.T) {
       region:
         default: us
         enum: [us, eu]
-`), []byte("  - url: "+upstream.URL+"/v1\n"), 1)
-	project, err := om.Generate(t.Context(), fixture, nil, om.Options{AppName: "widgets"})
+`), []byte("  - url: "+upstream.URL+"/{version}\n    variables:\n      version: {default: v1}\n"), 1)
+	project, err := om.Generate(t.Context(), fixture, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,10 @@ func TestGeneratedServer(t *testing.T) {
 	var list struct {
 		Tools []struct {
 			Name        string
-			InputSchema map[string]json.RawMessage
+			InputSchema struct {
+				Properties map[string]struct{ Description string }
+				Defs       json.RawMessage `json:"$defs"`
+			}
 			Annotations struct{ ReadOnlyHint bool }
 		}
 	}
@@ -107,16 +110,19 @@ func TestGeneratedServer(t *testing.T) {
 	if len(list.Tools) != 2 || list.Tools[0].Name != "_constructor" || !list.Tools[0].Annotations.ReadOnlyHint {
 		t.Fatalf("tools/list: %+v", list)
 	}
-	if missing := list.Tools[0].InputSchema["$defs"]; !bytes.Contains(missing, []byte(`"exclusiveMinimum":0`)) {
-		t.Fatalf("OpenAPI 3.0 bounds did not reach the MCP schema: %s", missing)
+	if id := list.Tools[0].InputSchema.Properties["id"]; id.Description != "Widget identifier" {
+		t.Fatalf("parameter description did not reach the MCP schema: %+v", list.Tools[0].InputSchema.Properties)
+	}
+	if defs := list.Tools[0].InputSchema.Defs; !bytes.Contains(defs, []byte(`"exclusiveMinimum":0`)) {
+		t.Fatalf("OpenAPI 3.0 bounds did not reach the MCP schema: %s", defs)
 	}
 
-	callWidget := func(path string, min int) toolResult {
+	callWidget := func(id string, min int) toolResult {
 		t.Helper()
 		var result toolResult
 		client.call(t, "tools/call", map[string]any{
 			"name": "_constructor", "arguments": map[string]any{
-				"path": map[string]string{"id": path}, "query": map[string]any{"filter": map[string]any{"min": min, "category": nil}},
+				"id": id, "filter": map[string]any{"min": min, "category": nil},
 			},
 		}, &result)
 		return result
@@ -136,10 +142,13 @@ func TestGeneratedServer(t *testing.T) {
 	if result := callWidget("invalid", 0); !result.IsError || len(upstreamCalls) != 0 {
 		t.Fatalf("schema violation reached the upstream: %+v", result)
 	}
+	if result := callWidget("A1", 2); !result.IsError || len(upstreamCalls) != 0 {
+		t.Fatalf("pattern violation reached the upstream: %+v", result)
+	}
 	var updated toolResult
 	client.call(t, "tools/call", map[string]any{
 		"name": "update-widget", "arguments": map[string]any{
-			"path": map[string]string{"id": "a"}, "body": map[string]string{"name": "next"},
+			"id": "a", "body": map[string]string{"name": "next"},
 		},
 	}, &updated)
 	if updated.IsError {

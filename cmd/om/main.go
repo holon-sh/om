@@ -30,19 +30,15 @@ func main() {
 }
 
 func generate(ctx context.Context, source, out string) error {
-	target, err := filepath.Abs(out)
-	if err != nil {
-		return err
-	}
 	data, location, err := document(ctx, source)
 	if err != nil {
 		return err
 	}
-	project, err := om.Generate(ctx, data, location, om.Options{AppName: filepath.Base(target)})
+	project, err := om.Generate(ctx, data, location)
 	if err != nil {
 		return err
 	}
-	if err := writeProject(target, project.Files); err != nil {
+	if err := writeProject(out, project.Files); err != nil {
 		return err
 	}
 	for _, omitted := range project.Omitted {

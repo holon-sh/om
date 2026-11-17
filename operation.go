@@ -13,14 +13,15 @@ import (
 )
 
 type operation struct {
-	Name        string        `json:"name"`
-	Title       string        `json:"title,omitempty"`
-	Description string        `json:"description,omitempty"`
-	Method      string        `json:"method"`
-	Path        string        `json:"path"`
-	InputSchema schema        `json:"inputSchema"`
-	Parameters  []parameter   `json:"parameters"`
-	Security    []credentials `json:"security"`
+	Name        string         `json:"name"`
+	Title       string         `json:"title,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Method      string         `json:"method"`
+	Path        string         `json:"path"`
+	InputSchema map[string]any `json:"inputSchema"`
+	Parameters  []parameter    `json:"parameters"`
+	Body        bool           `json:"body"`
+	Security    []credentials  `json:"security"`
 }
 
 type parameter struct {
@@ -30,39 +31,41 @@ type parameter struct {
 	Explode bool   `json:"explode"`
 }
 
-var toolNameChar = regexp.MustCompile(`[^A-Za-z0-9_.-]`)
+var toolNameChar = regexp.MustCompile(`[^A-Za-z0-9_.-]|^[.-]|[.-]$`)
 
 func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Operation, method, path string) (operation, []input, error) {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete, http.MethodPost, http.MethodPatch:
 	default:
-		return operation{}, nil, errors.New("HTTP method is unsupported by generated apps")
+		return operation{}, nil, fmt.Errorf("HTTP method %s is unsupported", method)
 	}
 	if len(item.Servers) != 0 || op.Servers != nil && len(*op.Servers) != 0 {
 		return operation{}, nil, errors.New("path- and operation-level servers are unsupported")
-	}
-	name := op.OperationID
-	if name == "" {
-		name = strings.ToLower(method) + "_" + strings.TrimPrefix(path, "/")
-	}
-	name = toolNameChar.ReplaceAllString(name, "_")
-	name = name[:min(len(name), 128)]
-	if slices.Contains([]string{
-		"constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__",
-		"__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString",
-	}, name) {
-		name = "_" + name
 	}
 	auth, inputs, err := compileSecurity(doc, op)
 	if err != nil {
 		return operation{}, nil, err
 	}
 	tool := operation{
-		Name: name, Title: op.Summary, Description: op.Description, Method: method, Path: path,
+		Name: toolName(op, method, path), Title: op.Summary, Description: op.Description, Method: method, Path: path,
 		Parameters: []parameter{}, Security: auth,
 	}
 	builder := schemaBuilder{doc: doc, definitions: map[string]any{}}
-	groups := map[string]objectSchema{}
+	properties := map[string]any{}
+	var required []string
+	argument := func(name string, shape any, description string, isRequired bool) error {
+		if _, taken := properties[name]; taken {
+			return fmt.Errorf("more than one parameter or request body maps to the tool argument %q", name)
+		}
+		if fields, ok := shape.(map[string]any); ok && description != "" {
+			fields["description"] = description
+		}
+		properties[name] = shape
+		if isRequired {
+			required = append(required, name)
+		}
+		return nil
+	}
 	for _, param := range effectiveParameters(item, op) {
 		if ignoreHeader(param) {
 			continue
@@ -78,32 +81,53 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 		if err != nil {
 			return operation{}, nil, fmt.Errorf("parameter %q: %w", param.Name, err)
 		}
-		group := groups[param.In]
-		group.add(param.Name, shape, param.Required)
-		groups[param.In] = group
+		if err := argument(param.Name, shape, param.Description, param.Required); err != nil {
+			return operation{}, nil, err
+		}
 		tool.Parameters = append(tool.Parameters, parameter{param.Name, param.In, serialization.Style, serialization.Explode})
 	}
-	root := objectSchema{}
-	for _, key := range slices.Sorted(maps.Keys(groups)) {
-		group := groups[key]
-		root.add(key, group.schema(), len(group.required) != 0)
-	}
 	if op.RequestBody != nil {
-		content := op.RequestBody.Value.Content["application/json"]
-		if content == nil || method == http.MethodGet || method == http.MethodHead {
-			return operation{}, nil, errors.New("request body is unsupported for this media type or HTTP method")
+		body := op.RequestBody.Value
+		content := body.Content["application/json"]
+		switch {
+		case content == nil:
+			return operation{}, nil, fmt.Errorf("request body media type %s is unsupported (only application/json is)", strings.Join(slices.Sorted(maps.Keys(body.Content)), ", "))
+		case method == http.MethodGet || method == http.MethodHead:
+			return operation{}, nil, fmt.Errorf("request bodies on %s are unsupported", method)
 		}
 		shape, err := builder.convert(content.Schema)
 		if err != nil {
 			return operation{}, nil, fmt.Errorf("request body: %w", err)
 		}
-		root.add("body", shape, op.RequestBody.Value.Required)
+		if err := argument("body", shape, body.Description, body.Required); err != nil {
+			return operation{}, nil, err
+		}
+		tool.Body = true
 	}
-	tool.InputSchema = root.schema()
+	tool.InputSchema = map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
+	if len(required) != 0 {
+		tool.InputSchema["required"] = required
+	}
 	if len(builder.definitions) != 0 {
 		tool.InputSchema["$defs"] = builder.definitions
 	}
 	return tool, inputs, nil
+}
+
+// toolName follows the MCP tool name format: https://github.com/modelcontextprotocol/modelcontextprotocol/issues/986
+func toolName(op *openapi3.Operation, method, path string) string {
+	name := op.OperationID
+	if name == "" {
+		name = strings.ToLower(method) + "_" + strings.TrimPrefix(path, "/")
+	}
+	name = toolNameChar.ReplaceAllString(name[:min(len(name), 128)], "_")
+	if slices.Contains([]string{
+		"constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__",
+		"__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString",
+	}, name) {
+		name = "_" + name
+	}
+	return name
 }
 
 func effectiveParameters(item *openapi3.PathItem, op *openapi3.Operation) []*openapi3.Parameter {
@@ -133,18 +157,28 @@ func ignoreHeader(p *openapi3.Parameter) bool {
 }
 
 func checkParameter(p *openapi3.Parameter, serialization *openapi3.SerializationMethod) error {
-	switch {
-	case len(p.Content) != 0, p.AllowReserved, p.AllowEmptyValue:
-	case p.In == openapi3.ParameterInHeader && prohibitedHeader(p.Name):
-	case p.In == openapi3.ParameterInHeader || p.In == openapi3.ParameterInPath:
-		if serialization.Style == openapi3.SerializationSimple {
+	if len(p.Content) != 0 {
+		return fmt.Errorf("%s parameter %q is described by content, which is unsupported", p.In, p.Name)
+	}
+	if p.In == openapi3.ParameterInHeader && prohibitedHeader(p.Name) {
+		return fmt.Errorf("header parameter %q cannot be sent", p.Name)
+	}
+	style := serialization.Style
+	switch p.In {
+	case openapi3.ParameterInHeader, openapi3.ParameterInPath:
+		if style == openapi3.SerializationSimple {
 			return nil
 		}
-	case serialization.Style == openapi3.SerializationForm ||
-		p.In == openapi3.ParameterInQuery && serialization.Style == openapi3.SerializationDeepObject && serialization.Explode:
-		return nil
+	case openapi3.ParameterInQuery:
+		if style == openapi3.SerializationForm || style == openapi3.SerializationDeepObject && serialization.Explode {
+			return nil
+		}
+	case openapi3.ParameterInCookie:
+		if style == openapi3.SerializationForm {
+			return nil
+		}
 	}
-	return fmt.Errorf("parameter %q uses an unsupported HTTP encoding", p.Name)
+	return fmt.Errorf("%s parameter %q uses style %s, which is unsupported", p.In, p.Name, style)
 }
 
 type credentialDestination struct {
@@ -225,7 +259,7 @@ func compileSecurity(doc *openapi3.T, op *openapi3.Operation) ([]credentials, []
 			return auth, inputs, nil
 		}
 	}
-	return nil, nil, errors.New("no supported security requirement (expected API key, bearer or basic)")
+	return nil, nil, errors.New("no security requirement uses only API key, HTTP bearer or HTTP basic schemes")
 }
 
 func compileScheme(name string, scheme *openapi3.SecurityScheme) (credentials, []input) {
@@ -269,30 +303,4 @@ func prohibitedHeader(name string) bool {
 		"connection", "content-length", "cookie", "host", "proxy-authorization",
 		"te", "trailer", "transfer-encoding", "upgrade",
 	}, strings.ToLower(name))
-}
-
-type objectSchema struct {
-	properties map[string]any
-	required   []string
-}
-
-func (o *objectSchema) add(name string, shape any, required bool) {
-	if o.properties == nil {
-		o.properties = map[string]any{}
-	}
-	o.properties[name] = shape
-	if required {
-		o.required = append(o.required, name)
-	}
-}
-
-func (o objectSchema) schema() schema {
-	value := schema{"type": "object", "additionalProperties": false}
-	if len(o.properties) != 0 {
-		value["properties"] = o.properties
-	}
-	if len(o.required) != 0 {
-		value["required"] = o.required
-	}
-	return value
 }
