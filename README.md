@@ -6,7 +6,9 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/jXExyBdy)
 
-<img align="right" src=".github/om.svg" width="160" alt="A Go gopher biting into an OpenAPI document">
+<img src=".github/om.svg" width="100" alt="A Go gopher biting into an OpenAPI document">
+
+----
 
 `om` turns an OpenAPI document into a standalone TypeScript [MCP server](https://modelcontextprotocol.io/docs/learn/server-concepts), with one tool per API operation.
 
