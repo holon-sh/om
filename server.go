@@ -14,7 +14,6 @@ import (
 )
 
 type variable struct {
-	Name    string   `json:"name"`
 	Env     string   `json:"env"`
 	Default string   `json:"default"`
 	Allowed []string `json:"allowed,omitempty"`
@@ -36,17 +35,18 @@ func resolveServer(servers openapi3.Servers, location *url.URL) (resolvedServer,
 		server = servers[0]
 	}
 	result := resolvedServer{variables: []variable{}, inputs: map[string]input{}}
-	var withMarkers, withDefaults, withNames, withEnv []string
+	var names []string
+	var withMarkers, withDefaults, withEnv []string
 	for _, match := range placeholder.FindAllStringSubmatch(server.URL, -1) {
 		name := match[1]
-		if slices.ContainsFunc(result.variables, func(v variable) bool { return v.Name == name }) {
+		if slices.Contains(names, name) {
 			continue
 		}
 		declared := server.Variables[name]
 		if declared == nil {
 			return resolvedServer{}, fmt.Errorf("server URL variable %q is undeclared", name)
 		}
-		v := variable{Name: name, Env: envName(name), Default: declared.Default, Allowed: declared.Enum}
+		v := variable{Env: envName(name), Default: declared.Default, Allowed: declared.Enum}
 		err := addInputs(result.inputs, input{
 			Input:  Input{Name: v.Env, Description: declared.Description, Default: &declared.Default, Choices: declared.Enum},
 			source: "server variable " + name,
@@ -54,11 +54,11 @@ func resolveServer(servers openapi3.Servers, location *url.URL) (resolvedServer,
 		if err != nil {
 			return resolvedServer{}, err
 		}
-		marker := fmt.Sprintf("om-variable-%d", len(result.variables))
+		marker := fmt.Sprintf("om-variable-%d", len(names))
+		names = append(names, name)
 		result.variables = append(result.variables, v)
 		withMarkers = append(withMarkers, match[0], marker)
 		withDefaults = append(withDefaults, marker, v.Default)
-		withNames = append(withNames, marker, match[0])
 		withEnv = append(withEnv, marker, "{"+v.Env+"}")
 	}
 	address, err := url.Parse(strings.NewReplacer(withMarkers...).Replace(server.URL))
@@ -83,8 +83,9 @@ func resolveServer(servers openapi3.Servers, location *url.URL) (resolvedServer,
 	if !validHostname(strings.NewReplacer(withDefaults...).Replace(host)) {
 		return resolvedServer{}, errors.New("OpenAPI server has an invalid hostname")
 	}
-	result.url = strings.NewReplacer(withNames...).Replace(address.String())
-	result.endpoint = Endpoint{Host: strings.NewReplacer(withEnv...).Replace(host), Port: port}
+	placeholders := strings.NewReplacer(withEnv...)
+	result.url = placeholders.Replace(address.String())
+	result.endpoint = Endpoint{Host: placeholders.Replace(host), Port: port}
 	return result, nil
 }
 

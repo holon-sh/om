@@ -31,7 +31,7 @@ type parameter struct {
 	Explode bool   `json:"explode"`
 }
 
-var toolNameChar = regexp.MustCompile(`[^A-Za-z0-9_.-]`)
+var toolNameChar = regexp.MustCompile(`[^A-Za-z0-9_.-]|^[.-]|[.-]$`)
 
 func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Operation, method, path string) (operation, []input, error) {
 	switch method {
@@ -53,15 +53,23 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 	builder := schemaBuilder{doc: doc, definitions: map[string]any{}}
 	properties := map[string]any{}
 	var required []string
-	locations := map[string]string{}
+	argument := func(name string, shape any, description string, isRequired bool) error {
+		if _, taken := properties[name]; taken {
+			return fmt.Errorf("more than one parameter or request body maps to the tool argument %q", name)
+		}
+		if fields, ok := shape.(map[string]any); ok && description != "" {
+			fields["description"] = description
+		}
+		properties[name] = shape
+		if isRequired {
+			required = append(required, name)
+		}
+		return nil
+	}
 	for _, param := range effectiveParameters(item, op) {
 		if ignoreHeader(param) {
 			continue
 		}
-		if in, taken := locations[param.Name]; taken {
-			return operation{}, nil, fmt.Errorf("%s and %s parameters share the name %q", in, param.In, param.Name)
-		}
-		locations[param.Name] = param.In
 		serialization, err := param.SerializationMethod()
 		if err != nil {
 			return operation{}, nil, err
@@ -73,9 +81,8 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 		if err != nil {
 			return operation{}, nil, fmt.Errorf("parameter %q: %w", param.Name, err)
 		}
-		properties[param.Name] = described(shape, param.Description)
-		if param.Required {
-			required = append(required, param.Name)
+		if err := argument(param.Name, shape, param.Description, param.Required); err != nil {
+			return operation{}, nil, err
 		}
 		tool.Parameters = append(tool.Parameters, parameter{param.Name, param.In, serialization.Style, serialization.Explode})
 	}
@@ -87,16 +94,13 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 			return operation{}, nil, fmt.Errorf("request body media type %s is unsupported (only application/json is)", strings.Join(slices.Sorted(maps.Keys(body.Content)), ", "))
 		case method == http.MethodGet || method == http.MethodHead:
 			return operation{}, nil, fmt.Errorf("request bodies on %s are unsupported", method)
-		case locations["body"] != "":
-			return operation{}, nil, fmt.Errorf("%s parameter %q conflicts with the request body argument", locations["body"], "body")
 		}
 		shape, err := builder.convert(content.Schema)
 		if err != nil {
 			return operation{}, nil, fmt.Errorf("request body: %w", err)
 		}
-		properties["body"] = described(shape, body.Description)
-		if body.Required {
-			required = append(required, "body")
+		if err := argument("body", shape, body.Description, body.Required); err != nil {
+			return operation{}, nil, err
 		}
 		tool.Body = true
 	}
@@ -110,13 +114,13 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 	return tool, inputs, nil
 }
 
+// toolName follows the MCP tool name format: https://github.com/modelcontextprotocol/modelcontextprotocol/issues/986
 func toolName(op *openapi3.Operation, method, path string) string {
 	name := op.OperationID
 	if name == "" {
 		name = strings.ToLower(method) + "_" + strings.TrimPrefix(path, "/")
 	}
-	name = toolNameChar.ReplaceAllString(name, "_")
-	name = name[:min(len(name), 128)]
+	name = toolNameChar.ReplaceAllString(name[:min(len(name), 128)], "_")
 	if slices.Contains([]string{
 		"constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__",
 		"__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString",
@@ -124,14 +128,6 @@ func toolName(op *openapi3.Operation, method, path string) string {
 		name = "_" + name
 	}
 	return name
-}
-
-func described(shape any, description string) any {
-	fields, ok := shape.(map[string]any)
-	if ok && description != "" {
-		fields["description"] = description
-	}
-	return shape
 }
 
 func effectiveParameters(item *openapi3.PathItem, op *openapi3.Operation) []*openapi3.Parameter {

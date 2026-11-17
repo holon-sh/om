@@ -18,7 +18,7 @@ npm start
 
 A document read from a file needs an absolute HTTPS server URL. A document fetched by URL may use a relative one. The output directory must be new.
 
-The project holds `server.ts`, which is the same for every document, `document.json` with the tools compiled from the document, and `package.json` with its lockfile.
+The server is two files that belong together: `server.ts`, which is the same for every document, and `document.json`, the tools compiled from the document, which `server.ts` reads from its own directory. `package.json` and `package-lock.json` complete the project.
 
 ## Supported documents
 

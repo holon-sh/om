@@ -50,7 +50,7 @@ func TestGeneratedServer(t *testing.T) {
       region:
         default: us
         enum: [us, eu]
-`), []byte("  - url: "+upstream.URL+"/v1\n"), 1)
+`), []byte("  - url: "+upstream.URL+"/{version}\n    variables:\n      version: {default: v1}\n"), 1)
 	project, err := om.Generate(t.Context(), fixture, nil)
 	if err != nil {
 		t.Fatal(err)

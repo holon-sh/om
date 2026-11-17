@@ -35,7 +35,7 @@ type GeneratedDocument = {
   title: string;
   version: string;
   server: string;
-  variables: { name: string; env: string; default: string; allowed?: string[] }[];
+  variables: { env: string; default: string; allowed?: string[] }[];
   operations: Operation[];
 };
 type Arguments = { [name: string]: JSONValue | undefined };
@@ -214,7 +214,7 @@ function serverURL(): URL {
     if ((variable.allowed && !variable.allowed.includes(value)) || value === "." || value === "..") {
       throw new RequestFailure(`Environment variable ${variable.env} is not a permitted server value.`);
     }
-    server = server.replaceAll(`{${variable.name}}`, encode(value));
+    server = server.replaceAll(`{${variable.env}}`, encode(value));
   }
   const url = URL.parse(server);
   if (!url || url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {

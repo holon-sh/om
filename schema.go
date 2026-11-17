@@ -32,7 +32,7 @@ func (b schemaBuilder) convert(ref *openapi3.SchemaRef) (any, error) {
 	if err := decoder.Decode(&value); err != nil {
 		return nil, err
 	}
-	if fields, ok := value.(map[string]any); ok && fields["$schema"] == nil && b.doc.JSONSchemaDialect != "" {
+	if fields, ok := value.(map[string]any); ok && fields["$schema"] == nil {
 		fields["$schema"] = b.doc.JSONSchemaDialect
 	}
 	return value, b.normalize(value)

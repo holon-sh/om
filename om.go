@@ -1,7 +1,6 @@
 package om
 
 import (
-	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -69,12 +68,8 @@ func Generate(ctx context.Context, data []byte, location *url.URL) (Project, err
 		return Project{}, err
 	}
 
-	model := generatedDocument{
-		Title: doc.Info.Title, Version: doc.Info.Version,
-		Server: server.url, Variables: server.variables, Operations: []operation{},
-	}
 	inputs := server.inputs
-	owners := map[string]string{}
+	tools := map[string]operation{}
 	var omitted []Omission
 	paths := doc.Paths.Map()
 	for _, path := range slices.Sorted(maps.Keys(paths)) {
@@ -82,8 +77,8 @@ func Generate(ctx context.Context, data []byte, location *url.URL) (Project, err
 		methods := item.Operations()
 		for _, method := range slices.Sorted(maps.Keys(methods)) {
 			tool, needed, err := compileOperation(doc, item, methods[method], method, path)
-			if owner, taken := owners[tool.Name]; err == nil && taken {
-				err = fmt.Errorf("tool name %q is already used by %s", tool.Name, owner)
+			if existing, taken := tools[tool.Name]; err == nil && taken {
+				err = fmt.Errorf("tool name %q is already used by %s %s", tool.Name, existing.Method, existing.Path)
 			}
 			if err == nil {
 				err = addInputs(inputs, needed...)
@@ -92,28 +87,29 @@ func Generate(ctx context.Context, data []byte, location *url.URL) (Project, err
 				omitted = append(omitted, Omission{method, path, err.Error()})
 				continue
 			}
-			owners[tool.Name] = method + " " + path
-			model.Operations = append(model.Operations, tool)
+			tools[tool.Name] = tool
 		}
 	}
-	if len(model.Operations) == 0 {
+	if len(tools) == 0 {
 		err := errors.New("document has no supported operations")
 		if len(omitted) != 0 {
 			err = fmt.Errorf("%w (first omission: %s)", err, omitted[0])
 		}
 		return Project{}, err
 	}
-	slices.SortFunc(model.Operations, func(a, b operation) int { return strings.Compare(a.Name, b.Name) })
-	var document bytes.Buffer
-	encoder := json.NewEncoder(&document)
-	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(model); err != nil {
+	model := generatedDocument{
+		Title: doc.Info.Title, Version: doc.Info.Version, Server: server.url, Variables: server.variables,
+	}
+	for _, name := range slices.Sorted(maps.Keys(tools)) {
+		model.Operations = append(model.Operations, tools[name])
+	}
+	document, err := json.Marshal(model)
+	if err != nil {
 		return Project{}, err
 	}
 	project := Project{
 		Files: map[string][]byte{
-			"document.json":     document.Bytes(),
+			"document.json":     document,
 			"server.ts":         []byte(serverSource),
 			"package.json":      []byte(packageManifest),
 			"package-lock.json": []byte(packageLock),
