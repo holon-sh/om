@@ -170,4 +170,25 @@ func TestHandler(t *testing.T) {
 	if result := callWidget("redirect", 1); !result.IsError || len(upstreamCalls) != 1 {
 		t.Fatalf("upstream redirect was followed or accepted: %+v", result)
 	}
+
+	// [MCP tools/call]: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+	wire, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{`+
+		`"name":"update-widget","arguments":{"id":"a","body":{"name":"next"}},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",`+
+		`"io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire.Header = http.Header{
+		"Content-Type": {"application/json"}, "Accept": {"application/json, text/event-stream"},
+		"Mcp-Protocol-Version": {"2026-07-28"}, "Mcp-Method": {"tools/call"}, "Mcp-Name": {"update-widget"},
+	}
+	response, err = http.DefaultClient.Do(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var reply struct{ Result json.RawMessage }
+	if err := json.NewDecoder(response.Body).Decode(&reply); err != nil || !bytes.Contains(reply.Result, []byte(`"resultType":"complete"`)) {
+		t.Fatalf("a 2026-07-28 tools/call result went out without resultType complete: %s: %v", reply.Result, err)
+	}
 }

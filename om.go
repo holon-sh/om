@@ -196,7 +196,9 @@ func (s served) server() *mcp.Server {
 				return s.list(request.Params)
 			case *mcp.CallToolRequest:
 				if i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name }); i >= 0 {
-					return s.call(ctx, s.Operations[i], request.Params.Arguments), nil
+					server.AddTool(s.Operations[i].tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+						return s.call(ctx, s.Operations[i], request.Params.Arguments), nil
+					})
 				}
 			}
 			return next(ctx, method, request)
