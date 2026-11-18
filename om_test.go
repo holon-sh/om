@@ -186,9 +186,10 @@ func TestHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
 	var reply struct{ Result struct{ ResultType string } }
-	if err := json.NewDecoder(response.Body).Decode(&reply); err != nil || reply.Result.ResultType != "complete" {
+	err = json.NewDecoder(response.Body).Decode(&reply)
+	_ = response.Body.Close()
+	if err != nil || reply.Result.ResultType != "complete" {
 		t.Fatalf("a 2026-07-28 tools/call result went out with resultType %q: %v", reply.Result.ResultType, err)
 	}
 }
