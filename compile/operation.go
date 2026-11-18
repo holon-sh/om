@@ -311,7 +311,7 @@ func resultSchema(doc *openapi3.T, definitions map[string]any, method string, op
 	if method == http.MethodHead {
 		return nil
 	}
-	builder := schemaBuilder{doc: doc, responses: definitions, definitions: map[string]any{}}
+	builder := schemaBuilder{doc: doc, known: definitions, definitions: map[string]any{}, response: true}
 	var union []any
 	nullable := false
 	responses := op.Responses.Map()
