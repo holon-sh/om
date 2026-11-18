@@ -77,7 +77,7 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 				continue
 			}
 			tools[tool.Name] = tool
-			if result := resultSchema(doc, definitions, methods[method]); result != nil {
+			if result := resultSchema(doc, definitions, method, methods[method]); result != nil {
 				results[tool.Name] = result
 			}
 		}

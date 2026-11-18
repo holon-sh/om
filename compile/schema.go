@@ -13,11 +13,12 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 )
 
-// schemaBuilder converts OpenAPI schemas, adding the components they reference to definitions unless
-// known already holds them.
+// schemaBuilder converts OpenAPI schemas, adding the components they reference to definitions. When it
+// converts response schemas, responses holds the components converted for other responses, which it
+// does not add again, and it leaves out the properties that only requests carry.
 type schemaBuilder struct {
-	doc                *openapi3.T
-	known, definitions map[string]any
+	doc                    *openapi3.T
+	responses, definitions map[string]any
 }
 
 func (b schemaBuilder) convert(ref *openapi3.SchemaRef) (any, error) {
@@ -72,6 +73,9 @@ func (b schemaBuilder) normalize(value any) error {
 	if b.doc.IsOpenAPI30() {
 		normalize30(fields)
 	}
+	if b.responses != nil {
+		leaveOutWriteOnly(fields)
+	}
 	for _, keyword := range []string{"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"} {
 		if object, ok := fields[keyword].(map[string]any); ok {
 			for _, key := range slices.Sorted(maps.Keys(object)) {
@@ -112,8 +116,8 @@ func (b schemaBuilder) reference(reference string) (string, error) {
 	if b.doc.Components == nil || b.doc.Components.Schemas[name] == nil {
 		return "", fmt.Errorf("schema reference targets missing component %q", name)
 	}
-	_, known := b.known[name]
-	if _, exists := b.definitions[name]; !exists && !known {
+	_, converted := b.responses[name]
+	if _, exists := b.definitions[name]; !exists && !converted {
 		b.definitions[name] = nil
 		value, err := b.convert(b.doc.Components.Schemas[name])
 		if err != nil {
@@ -122,6 +126,22 @@ func (b schemaBuilder) reference(reference string) (string, error) {
 		b.definitions[name] = value
 	}
 	return (&url.URL{Fragment: "/$defs/" + fragment}).String(), nil
+}
+
+// leaveOutWriteOnly removes the properties a schema marks [writeOnly], which a response does not carry,
+// from its properties and from those it requires.
+//
+// [writeOnly]: https://json-schema.org/draft/2020-12/json-schema-validation#section-9.4
+func leaveOutWriteOnly(fields map[string]any) {
+	properties, _ := fields["properties"].(map[string]any)
+	for name, property := range properties {
+		if schema, _ := property.(map[string]any); schema["writeOnly"] == true {
+			delete(properties, name)
+			if required, ok := fields["required"].([]any); ok {
+				fields["required"] = slices.DeleteFunc(required, func(item any) bool { return item == name })
+			}
+		}
+	}
 }
 
 func normalize30(fields map[string]any) {

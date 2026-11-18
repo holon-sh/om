@@ -301,12 +301,17 @@ func prohibitedHeader(name string) bool {
 
 // resultSchema is the type of an operation's result text parsed as JSON: the union of the
 // application/json schemas of its [2xx responses], with null when one has no content, since om's
-// result then has no text. It is nil when no 2xx response carries JSON, when one carries only other
-// media types, or when a schema cannot be converted. Components it uses are added to definitions.
+// result then has no text. It is nil for [HEAD], whose responses have no body, when no 2xx response
+// carries JSON, when one carries only other media types, and when a schema cannot be converted or is a
+// boolean. Components it uses are added to definitions.
 //
 // [2xx responses]: https://spec.openapis.org/oas/v3.2.0.html#responses-object
-func resultSchema(doc *openapi3.T, definitions map[string]any, op *openapi3.Operation) any {
-	builder := schemaBuilder{doc: doc, known: definitions, definitions: map[string]any{}}
+// [HEAD]: https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.2
+func resultSchema(doc *openapi3.T, definitions map[string]any, method string, op *openapi3.Operation) any {
+	if method == http.MethodHead {
+		return nil
+	}
+	builder := schemaBuilder{doc: doc, responses: definitions, definitions: map[string]any{}}
 	var union []any
 	nullable := false
 	responses := op.Responses.Map()
@@ -322,7 +327,7 @@ func resultSchema(doc *openapi3.T, definitions map[string]any, op *openapi3.Oper
 			return nil
 		}
 		schema, err := builder.convert(content["application/json"].Schema)
-		if err != nil {
+		if _, object := schema.(map[string]any); err != nil || !object {
 			return nil
 		}
 		if !slices.ContainsFunc(union, func(known any) bool { return reflect.DeepEqual(known, schema) }) {

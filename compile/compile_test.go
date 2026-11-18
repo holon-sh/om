@@ -294,6 +294,10 @@ paths:
       responses:
         '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Pet'}}}}}
         '404': {description: missing, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    head:
+      operationId: checkPets
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Pet'}}}}}
     post:
       operationId: createPet
       responses:
@@ -311,6 +315,10 @@ paths:
       operationId: deletePet
       responses:
         '204': {description: deleted}
+    patch:
+      operationId: touchPet
+      responses:
+        '200': {description: anything, content: {application/json: {schema: true}}}
     get:
       operationId: getPetPhoto
       responses:
@@ -318,7 +326,7 @@ paths:
         '203': {description: cached, content: {application/json: {schema: {$ref: '#/components/schemas/Pet'}}}}
 components:
   schemas:
-    Pet: {type: object, required: [name], properties: {name: {type: string}, owner: {$ref: '#/components/schemas/Owner'}}}
+    Pet: {type: object, required: [name, secret], properties: {name: {type: string}, secret: {type: string, writeOnly: true}, owner: {$ref: '#/components/schemas/Owner'}}}
     Owner: {type: object, properties: {name: {type: string}}}
     Job: {type: object, properties: {id: {type: integer}}}
     Error: {type: object, properties: {message: {type: string}}}
