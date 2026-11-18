@@ -174,9 +174,8 @@ func (d Document) Handler(lookup func(name string) (string, bool), transport htt
 	}), nil
 }
 
-// Implementation is the MCP server om serves the document as, and the options it builds that server with: what
-// server/discover answers, for a host that holds the document. A model of a format this version of om does not serve is
-// refused.
+// Implementation is the MCP server om serves the document as and the options it serves it with. It refuses a model of a
+// format this version of om does not serve.
 func (d Document) Implementation() (*mcp.Implementation, *mcp.ServerOptions, error) {
 	if d.Format != Format {
 		return nil, nil, fmt.Errorf("model format %d is not served by this version of om, which serves format %d; compile the document again", d.Format, Format)
@@ -219,12 +218,10 @@ func (s served) server() *mcp.Server {
 	return server
 }
 
-// pageBytes bounds the name, title, description and input schema bytes of the tools one tools/list page holds; a
-// single tool larger than pageBytes is still a page of its own.
+// pageBytes bounds the name, title, description and input schema bytes of a tools/list page.
 const pageBytes = 256 << 10
 
-// Tools is the page of tools a tools/list cursor names, in the order of the operations: what Handler answers, for a host
-// that holds the document. A cursor Tools did not issue is [invalid params].
+// Tools is the page of tools a tools/list cursor names. A cursor Tools did not issue is [invalid params].
 //
 // [invalid params]: https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/pagination#error-handling
 func (d Document) Tools(cursor string) (*mcp.ListToolsResult, error) {
@@ -249,8 +246,7 @@ func (d Document) Tools(cursor string) (*mcp.ListToolsResult, error) {
 	return result, nil
 }
 
-// Tool is the MCP tool the operation is served as. Its annotations follow the method's HTTP semantics: GET, HEAD and
-// OPTIONS only read, and PUT and DELETE are idempotent.
+// Tool is the MCP tool the operation is served as.
 func (o Operation) Tool() *mcp.Tool {
 	tool := &mcp.Tool{Name: o.Name, Title: o.Title, Description: o.Description, InputSchema: o.InputSchema}
 	switch o.Method {
