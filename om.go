@@ -159,8 +159,8 @@ func (s *Security) UnmarshalJSON(data []byte) error {
 // Handler serves the document's operations as MCP tools over Streamable HTTP, statelessly.
 // lookup supplies an input's value by name; transport carries the upstream requests.
 func (d Document) Handler(lookup func(name string) (string, bool), transport http.RoundTripper) (http.Handler, error) {
-	if d.Format != Format {
-		return nil, fmt.Errorf("model format %d is not served by this version of om, which serves format %d; compile the document again", d.Format, Format)
+	if _, _, err := d.Implementation(); err != nil {
+		return nil, err
 	}
 	client := &http.Client{
 		Transport:     transport,
@@ -174,6 +174,17 @@ func (d Document) Handler(lookup func(name string) (string, bool), transport htt
 	}), nil
 }
 
+// Implementation is the MCP server om serves the document as, and the options it builds that server with: what
+// server/discover answers, for a host that holds the document. A model of a format this version of om does not serve is
+// refused.
+func (d Document) Implementation() (*mcp.Implementation, *mcp.ServerOptions, error) {
+	if d.Format != Format {
+		return nil, nil, fmt.Errorf("model format %d is not served by this version of om, which serves format %d; compile the document again", d.Format, Format)
+	}
+	return &mcp.Implementation{Name: d.Title, Title: d.Title, Version: d.Version},
+		&mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}}, nil
+}
+
 type served struct {
 	Document
 	lookup func(string) (string, bool)
@@ -185,9 +196,8 @@ type served struct {
 //
 // [MCP 2026-07-28]: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
 func (s served) server() *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: s.Title, Title: s.Title, Version: s.Version}, &mcp.ServerOptions{
-		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-	})
+	implementation, options, _ := s.Implementation()
+	server := mcp.NewServer(implementation, options)
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
 			switch request := request.(type) {
