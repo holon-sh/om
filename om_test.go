@@ -46,11 +46,11 @@ func TestHandler(t *testing.T) {
 `), []byte("  - url: "+upstream.URL+"/{version}\n    variables:\n      version: {default: v1}\n"), 1)
 	fixture = bytes.Replace(fixture, []byte("      operationId: constructor\n"),
 		[]byte("      operationId: constructor\n      description: "+strings.Repeat("w", 256<<10)+"\n"), 1)
-	compiled, _, err := compile.Compile(t.Context(), fixture, nil)
+	compiled, err := compile.Compile(t.Context(), fixture, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	model, err := json.Marshal(compiled)
+	model, err := json.Marshal(compiled.Document)
 	if err != nil {
 		t.Fatal(err)
 	}

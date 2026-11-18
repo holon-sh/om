@@ -33,11 +33,12 @@ func serve(ctx context.Context, source string) error {
 	if err != nil {
 		return err
 	}
-	document, omitted, err := compile.Compile(ctx, data, location)
+	compiled, err := compile.Compile(ctx, data, location)
 	if err != nil {
 		return err
 	}
-	for _, omission := range omitted {
+	document := compiled.Document
+	for _, omission := range compiled.Omitted {
 		fmt.Fprintln(os.Stderr, "Skipped", omission)
 	}
 	for _, input := range document.Inputs {

@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -296,4 +297,47 @@ func prohibitedHeader(name string) bool {
 		"connection", "content-length", "cookie", "host", "proxy-authorization",
 		"te", "trailer", "transfer-encoding", "upgrade",
 	}, strings.ToLower(name))
+}
+
+// resultSchema is the type of an operation's result text parsed as JSON: the union of the
+// application/json schemas of its [2xx responses], with null when one has no content, since om's
+// result then has no text. It is nil when no 2xx response carries JSON, when one carries only other
+// media types, or when a schema cannot be converted. Components it uses are added to definitions.
+//
+// [2xx responses]: https://spec.openapis.org/oas/v3.2.0.html#responses-object
+func resultSchema(doc *openapi3.T, definitions map[string]any, op *openapi3.Operation) any {
+	builder := schemaBuilder{doc: doc, known: definitions, definitions: map[string]any{}}
+	var union []any
+	nullable := false
+	responses := op.Responses.Map()
+	for _, status := range slices.Sorted(maps.Keys(responses)) {
+		content := responses[status].Value.Content
+		switch {
+		case !strings.HasPrefix(status, "2"):
+			continue
+		case len(content) == 0:
+			nullable = true
+			continue
+		case content["application/json"] == nil:
+			return nil
+		}
+		schema, err := builder.convert(content["application/json"].Schema)
+		if err != nil {
+			return nil
+		}
+		if !slices.ContainsFunc(union, func(known any) bool { return reflect.DeepEqual(known, schema) }) {
+			union = append(union, schema)
+		}
+	}
+	if len(union) == 0 {
+		return nil
+	}
+	maps.Copy(definitions, builder.definitions)
+	if nullable {
+		union = append(union, map[string]any{"type": "null"})
+	}
+	if len(union) == 1 {
+		return union[0]
+	}
+	return map[string]any{"anyOf": union}
 }

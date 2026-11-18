@@ -1,6 +1,7 @@
 package compile_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -18,10 +19,11 @@ func TestCompile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	document, omitted, err := compile.Compile(t.Context(), data, nil)
+	compiled, err := compile.Compile(t.Context(), data, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	document, omitted := compiled.Document, compiled.Omitted
 	if document.Title != "Widgets" || document.Version != "1" {
 		t.Fatalf("wrong identity: %s, %s", document.Title, document.Version)
 	}
@@ -60,12 +62,12 @@ components:
 	base := &url.URL{Scheme: "https", Host: "spec.example.test:8443", Path: "/api/specs/openapi.yaml"}
 	for _, version := range []string{"3.0.4", "3.1.1", "3.2.0"} {
 		t.Run(version, func(t *testing.T) {
-			document, _, err := compile.Compile(t.Context(), []byte("openapi: "+version+api), base)
+			compiled, err := compile.Compile(t.Context(), []byte("openapi: "+version+api), base)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if document.Server != "https://spec.example.test:8443/api/v2" {
-				t.Fatalf("server: %s", document.Server)
+			if compiled.Document.Server != "https://spec.example.test:8443/api/v2" {
+				t.Fatalf("server: %s", compiled.Document.Server)
 			}
 		})
 	}
@@ -81,7 +83,7 @@ components:
 		{"No tools", "openapi: '3.1.1'" + strings.Replace(api, "get:\n", "trace:\n", 1), "no supported operations"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, err := compile.Compile(t.Context(), []byte(test.doc), base)
+			_, err := compile.Compile(t.Context(), []byte(test.doc), base)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("expected an error containing %q, got %v", test.want, err)
 			}
@@ -227,12 +229,12 @@ servers:
     variables:
       api-key: {default: eu}
 %s`, test.doc)
-			_, omissions, err := compile.Compile(t.Context(), []byte(document), nil)
+			compiled, err := compile.Compile(t.Context(), []byte(document), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var omitted []string
-			for _, omission := range omissions {
+			for _, omission := range compiled.Omitted {
 				omitted = append(omitted, omission.Method+" "+omission.Path)
 			}
 			if !slices.Equal(omitted, []string{test.omitted}) {
@@ -263,10 +265,11 @@ components:
 		{"OpenID Connect", `{type: openIdConnect, openIdConnectUrl: 'https://id.example.test/tenant/.well-known/openid-configuration'}`, "https://id.example.test/tenant"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			document, omitted, err := compile.Compile(t.Context(), []byte(fmt.Sprintf(api, test.scheme)), nil)
+			compiled, err := compile.Compile(t.Context(), []byte(fmt.Sprintf(api, test.scheme)), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
+			document, omitted := compiled.Document, compiled.Omitted
 			want := []om.Input{{Name: "OM_SIGN_IN", Authorization: &om.Authorization{Issuer: test.issuer, Scopes: []string{"items.read", "items.write"}}}}
 			if len(omitted) != 0 || !reflect.DeepEqual(document.Inputs, want) {
 				t.Fatalf("inputs %+v and omissions %v, want inputs %+v", document.Inputs, omitted, want)
@@ -277,5 +280,72 @@ components:
 				}
 			}
 		})
+	}
+}
+
+func TestResponses(t *testing.T) {
+	const api = `openapi: 3.1.1
+info: {title: Pets, version: '1'}
+servers: [{url: 'https://pets.example.test'}]
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Pet'}}}}}
+        '404': {description: missing, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    post:
+      operationId: createPet
+      responses:
+        '200': {description: existing, content: {application/json: {schema: {$ref: '#/components/schemas/Pet'}}}}
+        '201': {description: created, content: {application/json: {schema: {$ref: '#/components/schemas/Pet'}}}}
+        '202': {description: queued, content: {application/json: {schema: {$ref: '#/components/schemas/Job'}}}}
+  /pets/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    put:
+      operationId: replacePet
+      responses:
+        '200': {description: replaced, content: {application/json: {schema: {$ref: '#/components/schemas/Pet'}}}}
+        '204': {description: unchanged}
+    delete:
+      operationId: deletePet
+      responses:
+        '204': {description: deleted}
+    get:
+      operationId: getPetPhoto
+      responses:
+        '200': {description: photo, content: {image/png: {}}}
+        '203': {description: cached, content: {application/json: {schema: {$ref: '#/components/schemas/Pet'}}}}
+components:
+  schemas:
+    Pet: {type: object, required: [name], properties: {name: {type: string}, owner: {$ref: '#/components/schemas/Owner'}}}
+    Owner: {type: object, properties: {name: {type: string}}}
+    Job: {type: object, properties: {id: {type: integer}}}
+    Error: {type: object, properties: {message: {type: string}}}
+`
+	compiled, err := compile.Compile(t.Context(), []byte(api), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, want any
+	if err := json.Unmarshal(compiled.Responses, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{
+  "properties": {
+    "listPets": {"type": "array", "items": {"$ref": "#/$defs/Pet"}},
+    "createPet": {"anyOf": [{"$ref": "#/$defs/Pet"}, {"$ref": "#/$defs/Job"}]},
+    "replacePet": {"anyOf": [{"$ref": "#/$defs/Pet"}, {"type": "null"}]}
+  },
+  "$defs": {
+    "Pet": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "owner": {"$ref": "#/$defs/Owner"}}},
+    "Owner": {"type": "object", "properties": {"name": {"type": "string"}}},
+    "Job": {"type": "object", "properties": {"id": {"type": "integer"}}}
+  }
+}`), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("responses %s", compiled.Responses)
 	}
 }
