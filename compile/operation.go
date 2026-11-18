@@ -1,11 +1,13 @@
 package compile
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -199,7 +201,7 @@ func compileSecurity(doc *openapi3.T, op *openapi3.Operation) (om.Security, []in
 			if ref == nil {
 				break
 			}
-			value, needed := compileScheme(name, ref.Value)
+			value, needed := compileScheme(name, ref.Value, requirement[name])
 			if value == nil || slices.ContainsFunc(auth, func(c om.Credential) bool { return destination(c) == destination(value) }) {
 				break
 			}
@@ -210,10 +212,17 @@ func compileSecurity(doc *openapi3.T, op *openapi3.Operation) (om.Security, []in
 			return auth, inputs, nil
 		}
 	}
-	return nil, nil, errors.New("no security requirement uses only API key, HTTP bearer or HTTP basic schemes")
+	return nil, nil, errors.New("no security requirement uses only API key, HTTP bearer, HTTP basic, OAuth 2.0 or OpenID Connect schemes")
 }
 
-func compileScheme(name string, scheme *openapi3.SecurityScheme) (om.Credential, []input) {
+// compileScheme returns the credential an operation sends for a scheme and the inputs that supply it. An [OAuth 2.0]
+// scheme names its authorization server by oauth2MetadataUrl and an [OpenID Connect] scheme by openIdConnectUrl, and
+// scopes are the ones the operation's [security requirement] names.
+//
+// [OAuth 2.0]: https://spec.openapis.org/oas/v3.2.0.html#security-scheme-oauth2-metadata-url
+// [OpenID Connect]: https://spec.openapis.org/oas/v3.2.0.html#security-scheme-open-id-connect-url
+// [security requirement]: https://spec.openapis.org/oas/v3.2.0.html#security-requirement-object
+func compileScheme(name string, scheme *openapi3.SecurityScheme, scopes []string) (om.Credential, []input) {
 	secret := func(suffix string) input {
 		return input{
 			Input:  om.Input{Name: envName(name) + suffix},
@@ -243,8 +252,40 @@ func compileScheme(name string, scheme *openapi3.SecurityScheme) (om.Credential,
 	case scheme.Type == "http" && strings.EqualFold(scheme.Scheme, "basic"):
 		user, password := secret("_USERNAME"), secret("_PASSWORD")
 		return om.Basic{Username: user.Name, Password: password.Name}, []input{user, password}
+	case scheme.Type == "oauth2" || scheme.Type == "openIdConnect":
+		metadata, _ := scheme.Extensions["oauth2MetadataUrl"].(string)
+		server, ok := issuer(cmp.Or(scheme.OpenIdConnectUrl, metadata))
+		if !ok {
+			return nil, nil
+		}
+		token := secret("")
+		token.Authorization = &om.Authorization{Issuer: server, Scopes: union(scopes)}
+		return om.Bearer{Input: token.Name}, []input{token}
 	}
 	return nil, nil
+}
+
+// issuer is the issuer identifier of the authorization server whose metadata is at location: [RFC 8414 §3.1] inserts
+// /.well-known/oauth-authorization-server between the issuer's host and path, and [OpenID Connect Discovery 1.0 §4]
+// appends /.well-known/openid-configuration to the issuer.
+//
+// [RFC 8414 §3.1]: https://www.rfc-editor.org/rfc/rfc8414.html#section-3.1
+// [OpenID Connect Discovery 1.0 §4]: https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfig
+func issuer(location string) (string, bool) {
+	address, err := url.Parse(location)
+	if err != nil {
+		return "", false
+	}
+	origin, path := address.Scheme+"://"+address.Host, address.EscapedPath()
+	if rest, inserted := strings.CutPrefix(path, "/.well-known/oauth-authorization-server"); inserted && (rest == "" || rest[0] == '/') {
+		return origin + rest, true
+	}
+	rest, appended := strings.CutSuffix(path, "/.well-known/openid-configuration")
+	return origin + rest, appended
+}
+
+func union(sets ...[]string) []string {
+	return slices.Compact(slices.Sorted(slices.Values(slices.Concat(sets...))))
 }
 
 var httpToken = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")

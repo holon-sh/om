@@ -114,6 +114,11 @@ func addInputs(inputs map[string]input, values ...input) error {
 		if exists && previous.source != value.source {
 			return fmt.Errorf("%s and %s both map to environment variable %s", previous.source, value.source, value.Name)
 		}
+		if exists && value.Authorization != nil {
+			value.Authorization = &om.Authorization{
+				Issuer: value.Authorization.Issuer, Scopes: union(previous.Authorization.Scopes, value.Authorization.Scopes),
+			}
+		}
 		claimed[value.Name] = value
 	}
 	maps.Copy(inputs, claimed)

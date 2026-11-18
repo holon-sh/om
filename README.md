@@ -42,8 +42,6 @@ handler, err := served.Handler(os.LookupEnv, http.DefaultTransport)
 http.Handle("/mcp", handler)
 ```
 
-Only `compile` parses OpenAPI, which can take a few hundred MB for a large document. `Handler` needs only the model: `lookup` supplies credentials and server variables by name, and `transport` carries every request to the API. A request that reaches the handler over a loopback connection must carry a localhost `Host` header, which protects it from DNS rebinding. A handler is cheap to build, so a host can build one per request: a call reads only the called operation, and `tools/list` returns the tools in pages of about 256 KiB. It refuses a model whose `om` format it does not know.
-
 ## License
 
 [MIT](LICENSE). The om gopher is based on the [Go gopher](https://go.dev/blog/gopher) by Renee French, licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

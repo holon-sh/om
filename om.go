@@ -29,10 +29,24 @@ type Document struct {
 }
 
 // Input is a value the host supplies by name: a server variable when it has a default, a credential when it has none.
+// A credential with Authorization is an OAuth 2.0 access token, which operations send as an [RFC 6750 §2.1] bearer
+// token.
+//
+// [RFC 6750 §2.1]: https://www.rfc-editor.org/rfc/rfc6750.html#section-2.1
 type Input struct {
-	Name    string   `json:"name"`
-	Default *string  `json:"default,omitempty"`
-	Choices []string `json:"choices,omitempty"`
+	Name          string         `json:"name"`
+	Default       *string        `json:"default,omitempty"`
+	Choices       []string       `json:"choices,omitempty"`
+	Authorization *Authorization `json:"authorization,omitempty"`
+}
+
+// Authorization is the [RFC 8414 §2] issuer of the authorization server that issues an access token and the scopes the
+// operations that send it require.
+//
+// [RFC 8414 §2]: https://www.rfc-editor.org/rfc/rfc8414.html#section-2
+type Authorization struct {
+	Issuer string   `json:"issuer"`
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 type Operation struct {
