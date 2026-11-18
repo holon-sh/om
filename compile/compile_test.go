@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/holon-sh/om"
 	"github.com/holon-sh/om/compile"
 )
 
@@ -145,6 +147,66 @@ components:
 			"POST /first",
 		},
 		{
+			"OAuth 2.0 scheme that names no metadata",
+			`paths:
+  /first:
+    get:
+      security: [{sign-in: []}]
+  /second:
+    get: {}
+components:
+  securitySchemes:
+    sign-in:
+      type: oauth2
+      flows: {authorizationCode: {authorizationUrl: 'https://as.example.test/authorize', tokenUrl: 'https://as.example.test/token', scopes: {}}}
+`,
+			"GET /first",
+		},
+		{
+			"OpenID Connect scheme whose metadata URL is relative",
+			`paths:
+  /first:
+    get:
+      security: [{sign-in: []}]
+  /second:
+    get: {}
+components:
+  securitySchemes:
+    sign-in: {type: openIdConnect, openIdConnectUrl: '/.well-known/openid-configuration'}
+`,
+			"GET /first",
+		},
+		{
+			"OAuth 2.0 scheme named like another scheme's credential",
+			`paths:
+  /first:
+    get:
+      security: [{login: []}]
+  /second:
+    get:
+      security: [{login_USERNAME: []}]
+components:
+  securitySchemes:
+    login: {type: http, scheme: basic}
+    login_USERNAME: {type: oauth2, oauth2MetadataUrl: 'https://as.example.test/.well-known/oauth-authorization-server', flows: {}}
+`,
+			"GET /second",
+		},
+		{
+			"OpenID Connect scheme whose metadata is not at a well-known path",
+			`paths:
+  /first:
+    get:
+      security: [{sign-in: []}]
+  /second:
+    get: {}
+components:
+  securitySchemes:
+    sign-in: {type: openIdConnect, openIdConnectUrl: 'https://id.example.test/openid-configuration'}
+`,
+			"GET /first",
+		},
+		{
 			"unsupported document schema dialect",
 			`jsonSchemaDialect: https://example.test/dialect
 paths:
@@ -175,6 +237,44 @@ servers:
 			}
 			if !slices.Equal(omitted, []string{test.omitted}) {
 				t.Fatalf("omitted %q, want [%q]", omitted, test.omitted)
+			}
+		})
+	}
+}
+
+func TestOAuthSchemes(t *testing.T) {
+	const api = `openapi: 3.2.0
+info: {title: Test, version: '1'}
+servers: [{url: 'https://api.example.test'}]
+paths:
+  /items:
+    get:
+      security: [{sign-in: [items.read]}]
+    post:
+      security: [{sign-in: [items.write]}]
+components:
+  securitySchemes:
+    sign-in: %s
+`
+	for _, test := range []struct {
+		name, scheme, issuer string
+	}{
+		{"OAuth 2.0", `{type: oauth2, oauth2MetadataUrl: 'https://as.example.test/.well-known/oauth-authorization-server/tenant', flows: {}}`, "https://as.example.test/tenant"},
+		{"OpenID Connect", `{type: openIdConnect, openIdConnectUrl: 'https://id.example.test/tenant/.well-known/openid-configuration'}`, "https://id.example.test/tenant"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, omitted, err := compile.Compile(t.Context(), []byte(fmt.Sprintf(api, test.scheme)), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []om.Input{{Name: "OM_SIGN_IN", Authorization: &om.Authorization{Issuer: test.issuer, Scopes: []string{"items.read", "items.write"}}}}
+			if len(omitted) != 0 || !reflect.DeepEqual(document.Inputs, want) {
+				t.Fatalf("inputs %+v and omissions %v, want inputs %+v", document.Inputs, omitted, want)
+			}
+			for _, operation := range document.Operations {
+				if !reflect.DeepEqual(operation.Security, om.Security{om.Bearer{Input: "OM_SIGN_IN"}}) {
+					t.Fatalf("%s %s sends %+v, want the access token as a bearer token", operation.Method, operation.Path, operation.Security)
+				}
 			}
 		})
 	}
