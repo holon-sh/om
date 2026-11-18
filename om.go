@@ -205,7 +205,9 @@ func (s served) server() *mcp.Server {
 	return server
 }
 
-const pageBytes = 256 << 10
+// PageBytes bounds the name, title, description and input schema bytes of the tools one tools/list page holds; a
+// single tool larger than PageBytes is still a page of its own.
+const PageBytes = 256 << 10
 
 func (s served) list(params *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
 	start := 0
@@ -220,7 +222,7 @@ func (s served) list(params *mcp.ListToolsParams) (*mcp.ListToolsResult, error) 
 	size := 0
 	for i, operation := range s.Operations[start:] {
 		size += len(operation.Name) + len(operation.Title) + len(operation.Description) + len(operation.InputSchema)
-		if i > 0 && size > pageBytes {
+		if i > 0 && size > PageBytes {
 			result.NextCursor = strconv.Itoa(start + i)
 			break
 		}
