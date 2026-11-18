@@ -224,12 +224,13 @@ func (s served) list(params *mcp.ListToolsParams) (*mcp.ListToolsResult, error) 
 			result.NextCursor = strconv.Itoa(start + i)
 			break
 		}
-		result.Tools = append(result.Tools, operation.tool())
+		result.Tools = append(result.Tools, operation.Tool())
 	}
 	return result, nil
 }
 
-func (o Operation) tool() *mcp.Tool {
+// Tool is the MCP tool the operation is served as.
+func (o Operation) Tool() *mcp.Tool {
 	tool := &mcp.Tool{Name: o.Name, Title: o.Title, Description: o.Description, InputSchema: o.InputSchema}
 	switch o.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
