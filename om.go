@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -30,17 +28,11 @@ type Document struct {
 	Operations  []Operation `json:"operations"`
 }
 
+// Input is a value the host supplies by name: a server variable when it has a default, a credential when it has none.
 type Input struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	Default     *string  `json:"default,omitempty"`
-	Choices     []string `json:"choices,omitempty"`
-	Secret      bool     `json:"secret,omitempty"`
-}
-
-type Endpoint struct {
-	Host string
-	Port int
+	Name    string   `json:"name"`
+	Default *string  `json:"default,omitempty"`
+	Choices []string `json:"choices,omitempty"`
 }
 
 type Operation struct {
@@ -148,17 +140,6 @@ func (s *Security) UnmarshalJSON(data []byte) error {
 		}
 	}
 	return nil
-}
-
-// Endpoint is the host and port Server reaches, derived from it.
-func (d Document) Endpoint() Endpoint {
-	authority, _, _ := strings.Cut(strings.TrimPrefix(d.Server, "https://"), "/")
-	address := url.URL{Host: authority}
-	port := 443
-	if address.Port() != "" {
-		port, _ = strconv.Atoi(address.Port())
-	}
-	return Endpoint{Host: address.Hostname(), Port: port}
 }
 
 // Handler serves the document's operations as MCP tools over Streamable HTTP, statelessly.

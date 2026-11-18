@@ -35,7 +35,7 @@ func resolveServer(servers openapi3.Servers, location *url.URL) (string, map[str
 			return "", nil, fmt.Errorf("server URL variable %q is undeclared", name)
 		}
 		variable := input{
-			Input:  om.Input{Name: envName(name), Description: declared.Description, Default: &declared.Default, Choices: declared.Enum},
+			Input:  om.Input{Name: envName(name), Default: &declared.Default, Choices: declared.Enum},
 			source: "server variable " + name,
 		}
 		if err := addInputs(inputs, variable); err != nil {
