@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/holon-sh/om"
 	"github.com/holon-sh/om/compile"
 )
 
@@ -24,17 +23,17 @@ func TestCompile(t *testing.T) {
 	if document.Title != "Widgets" || document.Version != "1" {
 		t.Fatalf("wrong identity: %s, %s", document.Title, document.Version)
 	}
-	if document.Endpoint() != (om.Endpoint{Host: "{OM_REGION}.example.test", Port: 443}) {
-		t.Fatalf("endpoint: %+v", document.Endpoint())
+	if document.Server != "https://{OM_REGION}.example.test/v1" {
+		t.Fatalf("server: %s", document.Server)
 	}
 	if len(document.Inputs) != 2 {
 		t.Fatalf("inputs: %+v", document.Inputs)
 	}
 	region, key := document.Inputs[0], document.Inputs[1]
-	if region.Name != "OM_REGION" || region.Secret || region.Default == nil || *region.Default != "us" || !slices.Equal(region.Choices, []string{"us", "eu"}) {
+	if region.Name != "OM_REGION" || region.Default == nil || *region.Default != "us" || !slices.Equal(region.Choices, []string{"us", "eu"}) {
 		t.Fatalf("region input: %+v", region)
 	}
-	if key.Name != "OM_WIDGET_KEY" || !key.Secret || key.Default != nil {
+	if key.Name != "OM_WIDGET_KEY" || key.Default != nil {
 		t.Fatalf("key input: %+v", key)
 	}
 	if len(omitted) != 1 || omitted[0].Path != "/upload" || !strings.Contains(omitted[0].Reason, "multipart/form-data") {
@@ -63,8 +62,8 @@ components:
 			if err != nil {
 				t.Fatal(err)
 			}
-			if document.Endpoint() != (om.Endpoint{Host: "spec.example.test", Port: 8443}) {
-				t.Fatalf("endpoint: %+v", document.Endpoint())
+			if document.Server != "https://spec.example.test:8443/api/v2" {
+				t.Fatalf("server: %s", document.Server)
 			}
 		})
 	}

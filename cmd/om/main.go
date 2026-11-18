@@ -41,7 +41,7 @@ func serve(ctx context.Context, source string) error {
 		fmt.Fprintln(os.Stderr, "Skipped", omission)
 	}
 	for _, input := range document.Inputs {
-		if _, set := os.LookupEnv(input.Name); input.Secret && !set {
+		if _, set := os.LookupEnv(input.Name); input.Default == nil && !set {
 			fmt.Fprintln(os.Stderr, "Set", input.Name, "to supply credentials for tools that need it.")
 		}
 	}

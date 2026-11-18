@@ -216,7 +216,7 @@ func compileSecurity(doc *openapi3.T, op *openapi3.Operation) (om.Security, []in
 func compileScheme(name string, scheme *openapi3.SecurityScheme) (om.Credential, []input) {
 	secret := func(suffix string) input {
 		return input{
-			Input:  om.Input{Name: envName(name) + suffix, Description: scheme.Description, Secret: true},
+			Input:  om.Input{Name: envName(name) + suffix},
 			source: "security scheme " + name + suffix,
 		}
 	}
