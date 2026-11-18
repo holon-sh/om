@@ -166,6 +166,10 @@ type served struct {
 	client *http.Client
 }
 
+// server pages tools/list itself and answers tools/call through the SDK's tool dispatch, which gives the result the
+// resultType that [MCP 2026-07-28] clients require.
+//
+// [MCP 2026-07-28]: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
 func (s served) server() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: s.Title, Title: s.Title, Version: s.Version}, &mcp.ServerOptions{
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
