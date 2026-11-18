@@ -163,6 +163,36 @@ components:
 			"GET /first",
 		},
 		{
+			"OpenID Connect scheme whose metadata URL is relative",
+			`paths:
+  /first:
+    get:
+      security: [{sign-in: []}]
+  /second:
+    get: {}
+components:
+  securitySchemes:
+    sign-in: {type: openIdConnect, openIdConnectUrl: '/.well-known/openid-configuration'}
+`,
+			"GET /first",
+		},
+		{
+			"OAuth 2.0 scheme named like another scheme's credential",
+			`paths:
+  /first:
+    get:
+      security: [{login: []}]
+  /second:
+    get:
+      security: [{login_USERNAME: []}]
+components:
+  securitySchemes:
+    login: {type: http, scheme: basic}
+    login_USERNAME: {type: oauth2, oauth2MetadataUrl: 'https://as.example.test/.well-known/oauth-authorization-server', flows: {}}
+`,
+			"GET /second",
+		},
+		{
 			"OpenID Connect scheme whose metadata is not at a well-known path",
 			`paths:
   /first:

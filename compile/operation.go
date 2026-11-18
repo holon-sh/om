@@ -226,7 +226,7 @@ func compileScheme(name string, scheme *openapi3.SecurityScheme, scopes []string
 	secret := func(suffix string) input {
 		return input{
 			Input:  om.Input{Name: envName(name) + suffix},
-			source: "security scheme " + name + suffix,
+			source: "security scheme " + name + strings.ReplaceAll(suffix, "_", " "),
 		}
 	}
 	switch {
@@ -267,13 +267,14 @@ func compileScheme(name string, scheme *openapi3.SecurityScheme, scopes []string
 
 // issuer is the issuer identifier of the authorization server whose metadata is at location: [RFC 8414 §3.1] inserts
 // /.well-known/oauth-authorization-server between the issuer's host and path, and [OpenID Connect Discovery 1.0 §4]
-// appends /.well-known/openid-configuration to the issuer.
+// appends /.well-known/openid-configuration to the issuer. An issuer is an https URL, as [RFC 8414 §2] requires.
 //
 // [RFC 8414 §3.1]: https://www.rfc-editor.org/rfc/rfc8414.html#section-3.1
 // [OpenID Connect Discovery 1.0 §4]: https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfig
+// [RFC 8414 §2]: https://www.rfc-editor.org/rfc/rfc8414.html#section-2
 func issuer(location string) (string, bool) {
 	address, err := url.Parse(location)
-	if err != nil {
+	if err != nil || address.Scheme != "https" {
 		return "", false
 	}
 	origin, path := address.Scheme+"://"+address.Host, address.EscapedPath()
