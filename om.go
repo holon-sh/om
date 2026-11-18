@@ -159,8 +159,8 @@ func (s *Security) UnmarshalJSON(data []byte) error {
 // Handler serves the document's operations as MCP tools over Streamable HTTP, statelessly.
 // lookup supplies an input's value by name; transport carries the upstream requests.
 func (d Document) Handler(lookup func(name string) (string, bool), transport http.RoundTripper) (http.Handler, error) {
-	if d.Format != Format {
-		return nil, fmt.Errorf("model format %d is not served by this version of om, which serves format %d; compile the document again", d.Format, Format)
+	if _, _, err := d.Implementation(); err != nil {
+		return nil, err
 	}
 	client := &http.Client{
 		Transport:     transport,
@@ -174,6 +174,17 @@ func (d Document) Handler(lookup func(name string) (string, bool), transport htt
 	}), nil
 }
 
+// Implementation is the MCP server om serves the document as, and the options it builds that server with: what
+// server/discover answers, for a host that holds the document. A model of a format this version of om does not serve is
+// refused.
+func (d Document) Implementation() (*mcp.Implementation, *mcp.ServerOptions, error) {
+	if d.Format != Format {
+		return nil, nil, fmt.Errorf("model format %d is not served by this version of om, which serves format %d; compile the document again", d.Format, Format)
+	}
+	return &mcp.Implementation{Name: d.Title, Title: d.Title, Version: d.Version},
+		&mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}}, nil
+}
+
 type served struct {
 	Document
 	lookup func(string) (string, bool)
@@ -185,17 +196,19 @@ type served struct {
 //
 // [MCP 2026-07-28]: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
 func (s served) server() *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: s.Title, Title: s.Title, Version: s.Version}, &mcp.ServerOptions{
-		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-	})
+	implementation, options, _ := s.Implementation()
+	server := mcp.NewServer(implementation, options)
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
 			switch request := request.(type) {
 			case *mcp.ListToolsRequest:
-				return s.list(request.Params)
+				if request.Params == nil {
+					return s.Tools("")
+				}
+				return s.Tools(request.Params.Cursor)
 			case *mcp.CallToolRequest:
 				if i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name }); i >= 0 {
-					server.AddTool(s.Operations[i].tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					server.AddTool(s.Operations[i].Tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 						return s.call(ctx, s.Operations[i], request.Params.Arguments), nil
 					})
 				}
@@ -206,33 +219,39 @@ func (s served) server() *mcp.Server {
 	return server
 }
 
-// PageBytes bounds the name, title, description and input schema bytes of the tools one tools/list page holds; a
-// single tool larger than PageBytes is still a page of its own.
-const PageBytes = 256 << 10
+// pageBytes bounds the name, title, description and input schema bytes of the tools one tools/list page holds; a
+// single tool larger than pageBytes is still a page of its own.
+const pageBytes = 256 << 10
 
-func (s served) list(params *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
+// Tools is the page of tools a tools/list cursor names, in the order of the operations: what Handler answers, for a host
+// that holds the document. A cursor Tools did not issue is [invalid params].
+//
+// [invalid params]: https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/pagination#error-handling
+func (d Document) Tools(cursor string) (*mcp.ListToolsResult, error) {
 	start := 0
-	if params != nil && params.Cursor != "" {
+	if cursor != "" {
 		var err error
-		start, err = strconv.Atoi(params.Cursor)
-		if err != nil || start <= 0 || start >= len(s.Operations) {
-			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("invalid cursor %q", params.Cursor)}
+		start, err = strconv.Atoi(cursor)
+		if err != nil || start <= 0 || start >= len(d.Operations) {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("invalid cursor %q", cursor)}
 		}
 	}
 	result := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Cacheable: mcp.Cacheable{CacheScope: "public"}}
 	size := 0
-	for i, operation := range s.Operations[start:] {
+	for i, operation := range d.Operations[start:] {
 		size += len(operation.Name) + len(operation.Title) + len(operation.Description) + len(operation.InputSchema)
-		if i > 0 && size > PageBytes {
+		if i > 0 && size > pageBytes {
 			result.NextCursor = strconv.Itoa(start + i)
 			break
 		}
-		result.Tools = append(result.Tools, operation.tool())
+		result.Tools = append(result.Tools, operation.Tool())
 	}
 	return result, nil
 }
 
-func (o Operation) tool() *mcp.Tool {
+// Tool is the MCP tool the operation is served as. Its annotations follow the method's HTTP semantics: GET, HEAD and
+// OPTIONS only read, and PUT and DELETE are idempotent.
+func (o Operation) Tool() *mcp.Tool {
 	tool := &mcp.Tool{Name: o.Name, Title: o.Title, Description: o.Description, InputSchema: o.InputSchema}
 	switch o.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
