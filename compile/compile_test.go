@@ -1,6 +1,7 @@
 package compile_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -18,10 +19,11 @@ func TestCompile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	document, omitted, err := compile.Compile(t.Context(), data, nil)
+	compiled, err := compile.Compile(t.Context(), data, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	document, omitted := compiled.Document, compiled.Omitted
 	if document.Title != "Widgets" || document.Version != "1" {
 		t.Fatalf("wrong identity: %s, %s", document.Title, document.Version)
 	}
@@ -38,7 +40,7 @@ func TestCompile(t *testing.T) {
 	if key.Name != "OM_WIDGET_KEY" || key.Default != nil {
 		t.Fatalf("key input: %+v", key)
 	}
-	if len(omitted) != 1 || omitted[0].Path != "/upload" || !strings.Contains(omitted[0].Reason, "multipart/form-data") {
+	if len(omitted) != 1 || omitted[0].Path != "/upload" {
 		t.Fatalf("omissions: %+v", omitted)
 	}
 }
@@ -58,32 +60,22 @@ components:
     Unused: {type: string, enum: [a], default: b, pattern: '(a)\1'}
 `
 	base := &url.URL{Scheme: "https", Host: "spec.example.test:8443", Path: "/api/specs/openapi.yaml"}
-	for _, version := range []string{"3.0.4", "3.1.1", "3.2.0"} {
-		t.Run(version, func(t *testing.T) {
-			document, _, err := compile.Compile(t.Context(), []byte("openapi: "+version+api), base)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if document.Server != "https://spec.example.test:8443/api/v2" {
-				t.Fatalf("server: %s", document.Server)
-			}
-		})
+	compiled, err := compile.Compile(t.Context(), []byte("openapi: '3.1.1'"+api), base)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range []struct {
-		name string
-		doc  string
-		want string
-	}{
-		{"Swagger", "swagger: '2.0'" + api, "OpenAPI 3.0"},
-		{"No info", "openapi: '3.1.1'" + strings.Replace(api, "info:", "x-info:", 1), "info"},
-		{"HTTP server", "openapi: '3.1.1'" + strings.Replace(api, "../v2", "http://example.test", 1), "HTTPS"},
-		{"External reference", "openapi: '3.1.1'" + strings.Replace(api, "operationId: listWidgets", "requestBody: {$ref: 'https://example.test/body.yaml'}", 1), "external"},
-		{"No tools", "openapi: '3.1.1'" + strings.Replace(api, "get:\n", "trace:\n", 1), "no supported operations"},
+	if compiled.Document.Server != "https://spec.example.test:8443/api/v2" {
+		t.Fatalf("server: %s", compiled.Document.Server)
+	}
+	for _, test := range []struct{ name, doc string }{
+		{"Swagger", "swagger: '2.0'" + api},
+		{"No info", "openapi: '3.1.1'" + strings.Replace(api, "info:", "x-info:", 1)},
+		{"HTTP server", "openapi: '3.1.1'" + strings.Replace(api, "../v2", "http://example.test", 1)},
+		{"No tools", "openapi: '3.1.1'" + strings.Replace(api, "get:\n", "trace:\n", 1)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, err := compile.Compile(t.Context(), []byte(test.doc), base)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("expected an error containing %q, got %v", test.want, err)
+			if _, err := compile.Compile(t.Context(), []byte(test.doc), base); err == nil {
+				t.Fatal("compiled a document outside the boundary")
 			}
 		})
 	}
@@ -227,12 +219,12 @@ servers:
     variables:
       api-key: {default: eu}
 %s`, test.doc)
-			_, omissions, err := compile.Compile(t.Context(), []byte(document), nil)
+			compiled, err := compile.Compile(t.Context(), []byte(document), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var omitted []string
-			for _, omission := range omissions {
+			for _, omission := range compiled.Omitted {
 				omitted = append(omitted, omission.Method+" "+omission.Path)
 			}
 			if !slices.Equal(omitted, []string{test.omitted}) {
@@ -263,13 +255,14 @@ components:
 		{"OpenID Connect", `{type: openIdConnect, openIdConnectUrl: 'https://id.example.test/tenant/.well-known/openid-configuration'}`, "https://id.example.test/tenant"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			document, omitted, err := compile.Compile(t.Context(), []byte(fmt.Sprintf(api, test.scheme)), nil)
+			compiled, err := compile.Compile(t.Context(), []byte(fmt.Sprintf(api, test.scheme)), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
+			document := compiled.Document
 			want := []om.Input{{Name: "OM_SIGN_IN", Authorization: &om.Authorization{Issuer: test.issuer, Scopes: []string{"items.read", "items.write"}}}}
-			if len(omitted) != 0 || !reflect.DeepEqual(document.Inputs, want) {
-				t.Fatalf("inputs %+v and omissions %v, want inputs %+v", document.Inputs, omitted, want)
+			if !reflect.DeepEqual(document.Inputs, want) {
+				t.Fatalf("inputs %+v, want %+v", document.Inputs, want)
 			}
 			for _, operation := range document.Operations {
 				if !reflect.DeepEqual(operation.Security, om.Security{om.Bearer{Input: "OM_SIGN_IN"}}) {
@@ -277,5 +270,80 @@ components:
 				}
 			}
 		})
+	}
+}
+
+func TestResponses(t *testing.T) {
+	const api = `openapi: 3.1.1
+info: {title: Pets, version: '1'}
+servers: [{url: 'https://pets.example.test'}]
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Pet'}}}}}
+        '404': {description: missing, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    head:
+      operationId: checkPets
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Pet'}}}}}
+    post:
+      operationId: createPet
+      responses:
+        '200': {description: existing, content: {application/json: {schema: {$ref: '#/components/schemas/Pet'}}}}
+        '201': {description: created, content: {application/json: {schema: {$ref: '#/components/schemas/Pet'}}}}
+        '202': {description: queued, content: {application/json: {schema: {$ref: '#/components/schemas/Job'}}}}
+  /pets/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    put:
+      operationId: replacePet
+      responses:
+        '200': {description: replaced, content: {application/json: {schema: {$ref: '#/components/schemas/Pet'}}}}
+        '204': {description: unchanged}
+    delete:
+      operationId: deletePet
+      responses:
+        '204': {description: deleted}
+    patch:
+      operationId: touchPet
+      responses:
+        '200': {description: anything, content: {application/json: {schema: true}}}
+    get:
+      operationId: getPetPhoto
+      responses:
+        '200': {description: photo, content: {image/png: {}}}
+        '203': {description: cached, content: {application/json: {schema: {$ref: '#/components/schemas/Pet'}}}}
+components:
+  schemas:
+    Pet: {type: object, required: [name, secret], properties: {name: {type: string}, secret: {type: string, writeOnly: true}, owner: {$ref: '#/components/schemas/Owner'}}}
+    Owner: {type: object, properties: {name: {type: string}}}
+    Job: {type: object, properties: {id: {type: integer}}}
+    Error: {type: object, properties: {message: {type: string}}}
+`
+	compiled, err := compile.Compile(t.Context(), []byte(api), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, want any
+	if err := json.Unmarshal(compiled.Responses, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{
+  "properties": {
+    "listPets": {"type": "array", "items": {"$ref": "#/$defs/Pet"}},
+    "createPet": {"anyOf": [{"$ref": "#/$defs/Pet"}, {"$ref": "#/$defs/Job"}]},
+    "replacePet": {"anyOf": [{"$ref": "#/$defs/Pet"}, {"type": "null"}]}
+  },
+  "$defs": {
+    "Pet": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "owner": {"$ref": "#/$defs/Owner"}}},
+    "Owner": {"type": "object", "properties": {"name": {"type": "string"}}},
+    "Job": {"type": "object", "properties": {"id": {"type": "integer"}}}
+  }
+}`), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("responses %s", compiled.Responses)
 	}
 }

@@ -25,27 +25,40 @@ func (o Omission) String() string {
 	return o.Method + " " + o.Path + ": " + o.Reason
 }
 
-// Compile turns one OpenAPI 3.0–3.2 document into a Document and reports the operations it left out.
-// location resolves relative server URLs.
-func Compile(ctx context.Context, data []byte, location *url.URL) (om.Document, []Omission, error) {
+// Compiled is what one OpenAPI document compiles to.
+type Compiled struct {
+	// Document is the model a host stores and serves.
+	Document om.Document
+	// Omitted are the operations Document leaves out.
+	Omitted []Omission
+	// Responses is one JSON Schema, or nil when no tool has a result type. Each property is named after
+	// a tool and describes its result's text parsed as JSON, null when there is no text; $defs holds the
+	// document's components that the properties use, once each. Nothing serves or checks it.
+	Responses json.RawMessage
+}
+
+// Compile turns one OpenAPI 3.0–3.2 document into a Document, the operations it left out, and the
+// types of its tools' results. location resolves relative server URLs.
+func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, error) {
 	doc, err := load(ctx, data)
 	if err != nil {
-		return om.Document{}, nil, fmt.Errorf("load OpenAPI document: %w", err)
+		return Compiled{}, fmt.Errorf("load OpenAPI document: %w", err)
 	}
 	switch doc.OpenAPIMajorMinor() {
 	case "3.0", "3.1", "3.2":
 	default:
-		return om.Document{}, nil, errors.New("expected an OpenAPI 3.0, 3.1, or 3.2 document")
+		return Compiled{}, errors.New("expected an OpenAPI 3.0, 3.1, or 3.2 document")
 	}
 	if doc.Info == nil {
-		return om.Document{}, nil, errors.New("OpenAPI document has no info object")
+		return Compiled{}, errors.New("OpenAPI document has no info object")
 	}
 	server, inputs, err := resolveServer(doc.Servers, location)
 	if err != nil {
-		return om.Document{}, nil, err
+		return Compiled{}, err
 	}
 
 	tools := map[string]om.Operation{}
+	results, definitions := map[string]any{}, map[string]any{}
 	var omitted []Omission
 	paths := doc.Paths.Map()
 	for _, path := range slices.Sorted(maps.Keys(paths)) {
@@ -64,6 +77,9 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (om.Document, 
 				continue
 			}
 			tools[tool.Name] = tool
+			if result := resultSchema(doc, definitions, method, methods[method]); result != nil {
+				results[tool.Name] = result
+			}
 		}
 	}
 	if len(tools) == 0 {
@@ -71,7 +87,7 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (om.Document, 
 		if len(omitted) != 0 {
 			err = fmt.Errorf("%w (first omission: %s)", err, omitted[0])
 		}
-		return om.Document{}, nil, err
+		return Compiled{}, err
 	}
 	document := om.Document{
 		Format: om.Format, Title: doc.Info.Title, Version: doc.Info.Version, Description: doc.Info.Description,
@@ -83,7 +99,11 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (om.Document, 
 	for _, name := range slices.Sorted(maps.Keys(tools)) {
 		document.Operations = append(document.Operations, tools[name])
 	}
-	return document, omitted, nil
+	compiled := Compiled{Document: document, Omitted: omitted}
+	if len(results) != 0 {
+		compiled.Responses, err = json.Marshal(map[string]any{"properties": results, "$defs": definitions})
+	}
+	return compiled, err
 }
 
 func load(ctx context.Context, data []byte) (*openapi3.T, error) {

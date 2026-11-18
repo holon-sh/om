@@ -33,8 +33,8 @@ The server has no authentication of its own. Put it behind one before exposing i
 Compile a document once, store the model, and serve it wherever you need it:
 
 ```go
-document, skipped, err := compile.Compile(ctx, data, location)
-model, err := json.Marshal(document)
+compiled, err := compile.Compile(ctx, data, location)
+model, err := json.Marshal(compiled.Document)
 
 var served om.Document
 err = json.Unmarshal(model, &served)
