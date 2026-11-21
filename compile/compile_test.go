@@ -336,7 +336,7 @@ components:
 		}
 		got[operation.Name] = schema
 	}
-	const pet = `"Pet": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "owner": {"$ref": "#/$defs/Owner"}}},
+	const pet = `"Pet": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "secret": {"type": "string", "writeOnly": true}, "owner": {"$ref": "#/$defs/Owner"}}},
     "Owner": {"type": "object", "properties": {"name": {"type": "string"}}}`
 	var want map[string]any
 	if err := json.Unmarshal([]byte(fmt.Sprintf(`{

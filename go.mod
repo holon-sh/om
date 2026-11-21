@@ -4,12 +4,12 @@ go 1.27.0
 
 require (
 	github.com/getkin/kin-openapi v0.153.0
+	github.com/go-openapi/jsonpointer v0.22.5
 	github.com/modelcontextprotocol/go-sdk v1.9.0-pre.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 )
 
 require (
-	github.com/go-openapi/jsonpointer v0.22.5 // indirect
 	github.com/go-openapi/swag/jsonname v0.25.5 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
