@@ -148,8 +148,11 @@ func (b schemaBuilder) writeOnly(property any) bool {
 	reference, _ := schema["$ref"].(string)
 	pointer, _ := url.PathUnescape(reference)
 	name, referenced := strings.CutPrefix(pointer, "#/components/schemas/")
-	return schema["writeOnly"] == true ||
-		referenced && b.doc.Components.Schemas[name] != nil && b.doc.Components.Schemas[name].Value.WriteOnly
+	if schema["writeOnly"] == true || !referenced {
+		return schema["writeOnly"] == true
+	}
+	component := b.doc.Components.Schemas[name]
+	return component != nil && component.Value != nil && component.Value.WriteOnly
 }
 
 func normalize30(fields map[string]any) {
