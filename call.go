@@ -33,11 +33,11 @@ func failure(err error) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(refused)}}, IsError: true}
 }
 
-func (s served) call(ctx context.Context, o Operation, arguments json.RawMessage) *mcp.CallToolResult {
+func (s served) call(ctx context.Context, o Operation, tool *mcp.Tool, arguments json.RawMessage) *mcp.CallToolResult {
 	if arguments == nil {
 		arguments = json.RawMessage("{}")
 	}
-	schema, err := compileSchema(o.InputSchema)
+	schema, err := compileSchema(tool.InputSchema.(json.RawMessage))
 	if err != nil {
 		return failure(refusal(fmt.Sprintf("The input schema of tool %s is not valid JSON Schema 2020-12: %v", o.Name, err)))
 	}
@@ -71,8 +71,8 @@ func (s served) call(ctx context.Context, o Operation, arguments json.RawMessage
 	if text != "" {
 		result.Content = []mcp.Content{&mcp.TextContent{Text: text}}
 	}
-	if o.OutputSchema != nil {
-		result.StructuredContent, err = structured(o, cmp.Or(text, "null"))
+	if tool.OutputSchema != nil {
+		result.StructuredContent, err = structured(tool, cmp.Or(text, "null"))
 		if err != nil {
 			return failure(err)
 		}
@@ -80,10 +80,10 @@ func (s served) call(ctx context.Context, o Operation, arguments json.RawMessage
 	return result
 }
 
-func structured(o Operation, body string) (json.RawMessage, error) {
-	schema, err := compileSchema(o.OutputSchema)
+func structured(tool *mcp.Tool, body string) (json.RawMessage, error) {
+	schema, err := compileSchema(tool.OutputSchema.(json.RawMessage))
 	if err != nil {
-		return nil, refusal(fmt.Sprintf("The output schema of tool %s is not valid JSON Schema 2020-12: %v", o.Name, err))
+		return nil, refusal(fmt.Sprintf("The output schema of tool %s is not valid JSON Schema 2020-12: %v", tool.Name, err))
 	}
 	value, err := jsonschema.UnmarshalJSON(strings.NewReader(body))
 	if err == nil {

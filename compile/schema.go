@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net/url"
-	"slices"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/go-openapi/jsonpointer"
+	"github.com/holon-sh/om/internal/schema"
 )
 
 // schemaBuilder converts OpenAPI schemas, adding the components they reference to definitions.
@@ -72,7 +70,7 @@ func (b schemaBuilder) normalize(value any) error {
 	if b.doc.IsOpenAPI30() {
 		normalize30(fields)
 	}
-	for _, subschema := range subschemas(fields) {
+	for _, subschema := range schema.Subschemas(fields) {
 		if err := b.normalize(subschema); err != nil {
 			return err
 		}
@@ -95,75 +93,12 @@ func (b schemaBuilder) reference(reference string) (string, error) {
 		b.definitions[name] = nil
 		value, err := b.convert(b.doc.Components.Schemas[name])
 		if err != nil {
+			delete(b.definitions, name)
 			return "", err
 		}
 		b.definitions[name] = value
 	}
 	return (&url.URL{Fragment: "/$defs/" + fragment}).String(), nil
-}
-
-func subschemas(fields map[string]any) []any {
-	var found []any
-	for _, keyword := range []string{"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"} {
-		if object, ok := fields[keyword].(map[string]any); ok {
-			for _, key := range slices.Sorted(maps.Keys(object)) {
-				found = append(found, object[key])
-			}
-		}
-	}
-	for _, keyword := range []string{"prefixItems", "allOf", "anyOf", "oneOf"} {
-		if array, ok := fields[keyword].([]any); ok {
-			found = append(found, array...)
-		}
-	}
-	for _, keyword := range []string{
-		"additionalProperties", "propertyNames", "items", "contains", "not",
-		"if", "then", "else", "unevaluatedItems", "unevaluatedProperties", "contentSchema",
-	} {
-		found = append(found, fields[keyword])
-	}
-	return found
-}
-
-func (b schemaBuilder) leaveOutWriteOnly(value any) {
-	fields, ok := value.(map[string]any)
-	if !ok {
-		return
-	}
-	if required, ok := fields["required"].([]any); ok {
-		fields["required"] = slices.DeleteFunc(required, func(name any) bool {
-			return b.applies(fields, func(object map[string]any) bool {
-				properties, _ := object["properties"].(map[string]any)
-				return b.applies(properties[name.(string)], func(property map[string]any) bool {
-					return property["writeOnly"] == true
-				}, map[string]bool{})
-			}, map[string]bool{})
-		})
-	}
-	for _, subschema := range subschemas(fields) {
-		b.leaveOutWriteOnly(subschema)
-	}
-}
-
-func (b schemaBuilder) applies(schema any, test func(map[string]any) bool, seen map[string]bool) bool {
-	fields, ok := schema.(map[string]any)
-	if !ok {
-		return false
-	}
-	if test(fields) {
-		return true
-	}
-	if reference, ok := fields["$ref"].(string); ok && !seen[reference] {
-		seen[reference] = true
-		pointer, _ := url.PathUnescape(strings.TrimPrefix(reference, "#/$defs"))
-		parsed, _ := jsonpointer.New(pointer)
-		target, _, _ := parsed.Get(b.definitions)
-		if b.applies(target, test, seen) {
-			return true
-		}
-	}
-	branches, _ := fields["allOf"].([]any)
-	return slices.ContainsFunc(branches, func(branch any) bool { return b.applies(branch, test, seen) })
 }
 
 func normalize30(fields map[string]any) {

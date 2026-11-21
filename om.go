@@ -19,13 +19,14 @@ const Format = 2
 // Document is a compiled OpenAPI document: one MCP tool per operation.
 // Its JSON encoding is the model a host stores between compiling and serving.
 type Document struct {
-	Format      int         `json:"om"`
-	Title       string      `json:"title"`
-	Version     string      `json:"version"`
-	Description string      `json:"description,omitempty"`
-	Server      string      `json:"server"`
-	Inputs      []Input     `json:"inputs"`
-	Operations  []Operation `json:"operations"`
+	Format      int                        `json:"om"`
+	Title       string                     `json:"title"`
+	Version     string                     `json:"version"`
+	Description string                     `json:"description,omitempty"`
+	Server      string                     `json:"server"`
+	Inputs      []Input                    `json:"inputs"`
+	Definitions map[string]json.RawMessage `json:"definitions,omitempty"`
+	Operations  []Operation                `json:"operations"`
 }
 
 // Input is a value the host supplies by name: a server variable when it has a default, a credential when it has none.
@@ -208,8 +209,12 @@ func (s served) server() *mcp.Server {
 				return s.Tools(request.Params.Cursor)
 			case *mcp.CallToolRequest:
 				if i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name }); i >= 0 {
-					server.AddTool(s.Operations[i].Tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-						return s.call(ctx, s.Operations[i], request.Params.Arguments), nil
+					tool, err := s.Tool(s.Operations[i])
+					if err != nil {
+						return nil, err
+					}
+					server.AddTool(tool, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+						return s.call(ctx, s.Operations[i], tool, request.Params.Arguments), nil
 					})
 				}
 			}
@@ -237,21 +242,33 @@ func (d Document) Tools(cursor string) (*mcp.ListToolsResult, error) {
 	result := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Cacheable: mcp.Cacheable{CacheScope: "public"}}
 	size := 0
 	for i, operation := range d.Operations[start:] {
-		size += len(operation.Name) + len(operation.Title) + len(operation.Description) + len(operation.InputSchema) + len(operation.OutputSchema)
+		tool, err := d.Tool(operation)
+		if err != nil {
+			return nil, err
+		}
+		input, _ := tool.InputSchema.(json.RawMessage)
+		output, _ := tool.OutputSchema.(json.RawMessage)
+		size += len(tool.Name) + len(tool.Title) + len(tool.Description) + len(input) + len(output)
 		if i > 0 && size > pageBytes {
 			result.NextCursor = strconv.Itoa(start + i)
 			break
 		}
-		result.Tools = append(result.Tools, operation.Tool())
+		result.Tools = append(result.Tools, tool)
 	}
 	return result, nil
 }
 
 // Tool is the MCP tool the operation is served as.
-func (o Operation) Tool() *mcp.Tool {
-	tool := &mcp.Tool{Name: o.Name, Title: o.Title, Description: o.Description, InputSchema: o.InputSchema}
+func (d Document) Tool(o Operation) (*mcp.Tool, error) {
+	input, err := d.standalone(o.InputSchema, false)
+	if err != nil {
+		return nil, err
+	}
+	tool := &mcp.Tool{Name: o.Name, Title: o.Title, Description: o.Description, InputSchema: input}
 	if o.OutputSchema != nil {
-		tool.OutputSchema = o.OutputSchema
+		if tool.OutputSchema, err = d.standalone(o.OutputSchema, true); err != nil {
+			return nil, err
+		}
 	}
 	switch o.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
@@ -259,5 +276,5 @@ func (o Operation) Tool() *mcp.Tool {
 	case http.MethodPut, http.MethodDelete:
 		tool.Annotations = &mcp.ToolAnnotations{IdempotentHint: true}
 	}
-	return tool
+	return tool, nil
 }

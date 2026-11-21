@@ -19,7 +19,7 @@ import (
 
 var toolNameChar = regexp.MustCompile(`[^A-Za-z0-9_.-]|^[.-]|[.-]$`)
 
-func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Operation, method, path string) (om.Operation, []input, error) {
+func compileOperation(builder schemaBuilder, item *openapi3.PathItem, op *openapi3.Operation, method, path string) (om.Operation, []input, error) {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete, http.MethodPost, http.MethodPatch:
 	default:
@@ -28,7 +28,7 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 	if len(item.Servers) != 0 || op.Servers != nil && len(*op.Servers) != 0 {
 		return om.Operation{}, nil, errors.New("path- and operation-level servers are unsupported")
 	}
-	auth, inputs, err := compileSecurity(doc, op)
+	auth, inputs, err := compileSecurity(builder.doc, op)
 	if err != nil {
 		return om.Operation{}, nil, err
 	}
@@ -36,7 +36,6 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 		Name: toolName(op, method, path), Title: op.Summary, Description: op.Description, Method: method, Path: path,
 		Security: auth,
 	}
-	builder := schemaBuilder{doc: doc, definitions: map[string]any{}}
 	properties := map[string]any{}
 	var required []string
 	argument := func(name string, shape any, description string, isRequired bool) error {
@@ -98,14 +97,11 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 	if len(required) != 0 {
 		schema["required"] = required
 	}
-	if len(builder.definitions) != 0 {
-		schema["$defs"] = builder.definitions
-	}
 	tool.InputSchema, err = json.Marshal(schema)
 	if err != nil {
 		return om.Operation{}, nil, err
 	}
-	if result := resultSchema(doc, method, op); result != nil {
+	if result := resultSchema(builder, method, op); result != nil {
 		tool.OutputSchema, err = json.Marshal(result)
 	}
 	return tool, inputs, err
@@ -313,11 +309,10 @@ func prohibitedHeader(name string) bool {
 //
 // [2xx responses]: https://spec.openapis.org/oas/v3.2.0.html#responses-object
 // [HEAD]: https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.2
-func resultSchema(doc *openapi3.T, method string, op *openapi3.Operation) map[string]any {
+func resultSchema(builder schemaBuilder, method string, op *openapi3.Operation) map[string]any {
 	if method == http.MethodHead {
 		return nil
 	}
-	builder := schemaBuilder{doc: doc, definitions: map[string]any{}}
 	var union []map[string]any
 	nullable := false
 	responses := op.Responses.Map()
@@ -337,7 +332,6 @@ func resultSchema(doc *openapi3.T, method string, op *openapi3.Operation) map[st
 		if err != nil || !object {
 			return nil
 		}
-		builder.leaveOutWriteOnly(schema)
 		if !slices.ContainsFunc(union, func(known map[string]any) bool { return reflect.DeepEqual(known, schema) }) {
 			union = append(union, schema)
 		}
@@ -348,15 +342,8 @@ func resultSchema(doc *openapi3.T, method string, op *openapi3.Operation) map[st
 	if nullable {
 		union = append(union, map[string]any{"type": "null"})
 	}
-	result := union[0]
 	if len(union) > 1 {
-		result = map[string]any{"anyOf": union}
+		return map[string]any{"anyOf": union}
 	}
-	for _, definition := range builder.definitions {
-		builder.leaveOutWriteOnly(definition)
-	}
-	if len(builder.definitions) != 0 {
-		result["$defs"] = builder.definitions
-	}
-	return result
+	return union[0]
 }
