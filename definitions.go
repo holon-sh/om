@@ -31,13 +31,7 @@ func (d Document) expand(root json.RawMessage, result bool) (json.RawMessage, er
 	if err != nil {
 		return nil, err
 	}
-	reached, err := schema.Reach(func(name string) (any, error) {
-		definition, err := jsonschema.UnmarshalJSON(bytes.NewReader(d.Definitions[name]))
-		if err != nil {
-			return nil, fmt.Errorf("definition %q: %w", name, err)
-		}
-		return definition, nil
-	}, value)
+	reached, err := schema.Reach(d.definition, value)
 	if err != nil {
 		return nil, err
 	}
@@ -46,6 +40,14 @@ func (d Document) expand(root json.RawMessage, result bool) (json.RawMessage, er
 	}
 	definitions(reached).prune(value, result)
 	return json.Marshal(value)
+}
+
+func (d Document) definition(name string) (any, error) {
+	definition, err := jsonschema.UnmarshalJSON(bytes.NewReader(d.Definitions[name]))
+	if err != nil {
+		return nil, fmt.Errorf("definition %q: %w", name, err)
+	}
+	return definition, nil
 }
 
 type definitions map[string]any
@@ -98,6 +100,19 @@ func (d definitions) applies(value any, test func(map[string]any) bool, seen map
 	}
 	branches, _ := fields["allOf"].([]any)
 	return slices.ContainsFunc(branches, func(branch any) bool { return d.applies(branch, test, seen) })
+}
+
+func rebase(value any, base string) {
+	fields, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	if reference, ok := fields["$ref"].(string); ok && strings.HasPrefix(reference, "#/$defs/") {
+		fields["$ref"] = base + reference
+	}
+	for _, subschema := range schema.Subschemas(fields) {
+		rebase(subschema, base)
+	}
 }
 
 func (d definitions) target(reference string) any {

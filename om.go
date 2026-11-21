@@ -161,17 +161,15 @@ func (s *Security) UnmarshalJSON(data []byte) error {
 // Handler serves the document's operations as MCP tools over Streamable HTTP, statelessly.
 // lookup supplies an input's value by name; transport carries the upstream requests.
 func (d Document) Handler(lookup func(name string) (string, bool), transport http.RoundTripper) (http.Handler, error) {
-	if _, _, err := d.Implementation(); err != nil {
-		return nil, err
-	}
-	client := &http.Client{
+	server, err := served{d, lookup, &http.Client{
 		Transport:     transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Timeout:       30 * time.Second,
+	}}.server()
+	if err != nil {
+		return nil, err
 	}
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return served{d, lookup, client}.server()
-	}, &mcp.StreamableHTTPOptions{
+	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 		Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, Logger: slog.Default(),
 	}), nil
 }
@@ -196,32 +194,45 @@ type served struct {
 // resultType that [MCP 2026-07-28] clients require.
 //
 // [MCP 2026-07-28]: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
-func (s served) server() *mcp.Server {
-	implementation, options, _ := s.Implementation()
+func (s served) server() (*mcp.Server, error) {
+	implementation, options, err := s.Implementation()
+	if err != nil {
+		return nil, err
+	}
 	server := mcp.NewServer(implementation, options)
+	tools, err := s.tools()
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range tools {
+		if err := addTool(server, &mcp.Tool{Name: t.Name, InputSchema: t.InputSchema}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return s.call(ctx, t, request.Params.Arguments), nil
+		}); err != nil {
+			return nil, err
+		}
+	}
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
-			switch request := request.(type) {
-			case *mcp.ListToolsRequest:
+			if request, ok := request.(*mcp.ListToolsRequest); ok {
 				if request.Params == nil {
 					return s.Tools("")
 				}
 				return s.Tools(request.Params.Cursor)
-			case *mcp.CallToolRequest:
-				if i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name }); i >= 0 {
-					operation, err := s.standalone(s.Operations[i])
-					if err != nil {
-						return nil, err
-					}
-					server.AddTool(operation.tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-						return s.call(ctx, operation, request.Params.Arguments), nil
-					})
-				}
 			}
 			return next(ctx, method, request)
 		}
 	})
-	return server
+	return server, nil
+}
+
+func addTool(server *mcp.Server, tool *mcp.Tool, handler mcp.ToolHandler) (err error) {
+	defer func() {
+		if refused := recover(); refused != nil {
+			err = fmt.Errorf("%v", refused)
+		}
+	}()
+	server.AddTool(tool, handler)
+	return nil
 }
 
 // pageBytes bounds the name, title, description and schema bytes of a tools/list page.

@@ -56,6 +56,8 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 
 	tools := map[string]om.Operation{}
 	builder := schemaBuilder{doc: doc, definitions: map[string]any{}, added: &[]string{}}
+	definitions := map[string]json.RawMessage{}
+	compiler := schema.Compiler{}
 	var omitted []Omission
 	paths := doc.Paths.Map()
 	for _, path := range slices.Sorted(maps.Keys(paths)) {
@@ -63,6 +65,9 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 		methods := item.Operations()
 		for _, method := range slices.Sorted(maps.Keys(methods)) {
 			tool, needed, err := compileOperation(builder, item, methods[method], method, path)
+			if err == nil {
+				err = check(compiler, builder, definitions, tool)
+			}
 			if existing, taken := tools[tool.Name]; err == nil && taken {
 				err = fmt.Errorf("tool name %q is already used by %s %s", tool.Name, existing.Method, existing.Path)
 			}
@@ -101,10 +106,8 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 	}
 	reached, _ := schema.Reach(func(name string) (any, error) { return builder.definitions[name], nil }, roots...)
 	document.Definitions = make(map[string]json.RawMessage, len(reached))
-	for name, definition := range reached {
-		if document.Definitions[name], err = json.Marshal(definition); err != nil {
-			return Compiled{}, err
-		}
+	for name := range reached {
+		document.Definitions[name] = definitions[name]
 	}
 	return Compiled{Document: document, Omitted: omitted}, nil
 }
