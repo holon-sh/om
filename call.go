@@ -68,9 +68,9 @@ func (d Document) tools() ([]tool, error) {
 }
 
 func (d Document) validators(result bool) (map[string]*jsonschema.Schema, error) {
-	base, absent := "urn:om:input", "readOnly"
+	base := "urn:om:input"
 	if result {
-		base, absent = "urn:om:output", "writeOnly"
+		base = "urn:om:output"
 	}
 	roots := map[string]any{}
 	for _, o := range d.Operations {
@@ -91,9 +91,7 @@ func (d Document) validators(result bool) (map[string]*jsonschema.Schema, error)
 	if err != nil {
 		return nil, err
 	}
-	for _, definition := range reached {
-		definitions(reached).leaveOut(definition, absent)
-	}
+	definitions(reached).prune(map[string]any{"$defs": reached}, result)
 	compiler := jsonschema.NewCompiler()
 	compiler.DefaultDraft(jsonschema.Draft2020)
 	if err := compiler.AddResource(base, map[string]any{"$defs": reached}); err != nil {
@@ -101,7 +99,7 @@ func (d Document) validators(result bool) (map[string]*jsonschema.Schema, error)
 	}
 	validators := map[string]*jsonschema.Schema{}
 	for name, root := range roots {
-		definitions(reached).leaveOut(root, absent)
+		definitions(reached).prune(root, result)
 		rebase(root, base)
 		location := base + "/" + name
 		if err := compiler.AddResource(location, root); err != nil {
