@@ -15,18 +15,18 @@ import (
 
 func (d Document) standalone(o Operation) (Operation, error) {
 	var err error
-	if o.InputSchema, err = d.expand(o.InputSchema, "readOnly"); err != nil {
+	if o.InputSchema, err = d.expand(o.InputSchema, false); err != nil {
 		return Operation{}, err
 	}
 	if o.OutputSchema != nil {
-		if o.OutputSchema, err = d.expand(o.OutputSchema, "writeOnly"); err != nil {
+		if o.OutputSchema, err = d.expand(o.OutputSchema, true); err != nil {
 			return Operation{}, err
 		}
 	}
 	return o, nil
 }
 
-func (d Document) expand(root json.RawMessage, absent string) (json.RawMessage, error) {
+func (d Document) expand(root json.RawMessage, result bool) (json.RawMessage, error) {
 	value, err := jsonschema.UnmarshalJSON(bytes.NewReader(root))
 	if err != nil {
 		return nil, err
@@ -44,11 +44,22 @@ func (d Document) expand(root json.RawMessage, absent string) (json.RawMessage, 
 	if fields, ok := value.(map[string]any); ok && len(reached) != 0 {
 		fields["$defs"] = reached
 	}
-	definitions(reached).leaveOut(value, absent)
+	definitions(reached).prune(value, result)
 	return json.Marshal(value)
 }
 
 type definitions map[string]any
+
+func (d definitions) prune(root any, result bool) {
+	if result {
+		d.leaveOut(root, "writeOnly")
+		return
+	}
+	fields, _ := root.(map[string]any)
+	for _, argument := range schema.Subschemas(fields) {
+		d.leaveOut(argument, "readOnly")
+	}
+}
 
 func (d definitions) leaveOut(value any, absent string) {
 	fields, ok := value.(map[string]any)
