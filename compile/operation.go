@@ -317,7 +317,7 @@ func resultSchema(doc *openapi3.T, method string, op *openapi3.Operation) map[st
 	if method == http.MethodHead {
 		return nil
 	}
-	builder := schemaBuilder{doc: doc, definitions: map[string]any{}, response: true}
+	builder := schemaBuilder{doc: doc, definitions: map[string]any{}}
 	var union []map[string]any
 	nullable := false
 	responses := op.Responses.Map()
@@ -337,6 +337,7 @@ func resultSchema(doc *openapi3.T, method string, op *openapi3.Operation) map[st
 		if err != nil || !object {
 			return nil
 		}
+		builder.leaveOutWriteOnly(schema)
 		if !slices.ContainsFunc(union, func(known map[string]any) bool { return reflect.DeepEqual(known, schema) }) {
 			union = append(union, schema)
 		}
@@ -350,6 +351,9 @@ func resultSchema(doc *openapi3.T, method string, op *openapi3.Operation) map[st
 	result := union[0]
 	if len(union) > 1 {
 		result = map[string]any{"anyOf": union}
+	}
+	for _, definition := range builder.definitions {
+		builder.leaveOutWriteOnly(definition)
 	}
 	if len(builder.definitions) != 0 {
 		result["$defs"] = builder.definitions
