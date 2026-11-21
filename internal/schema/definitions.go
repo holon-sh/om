@@ -7,17 +7,17 @@ import (
 	"strings"
 )
 
-func Subschemas(fields map[string]any) []any {
+func Subschemas(fields map[string]any, skip ...string) []any {
 	var found []any
 	for _, keyword := range []string{"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"} {
-		if object, ok := fields[keyword].(map[string]any); ok {
+		if object, ok := fields[keyword].(map[string]any); ok && !slices.Contains(skip, keyword) {
 			for _, key := range slices.Sorted(maps.Keys(object)) {
 				found = append(found, object[key])
 			}
 		}
 	}
 	for _, keyword := range []string{"prefixItems", "allOf", "anyOf", "oneOf"} {
-		if array, ok := fields[keyword].([]any); ok {
+		if array, ok := fields[keyword].([]any); ok && !slices.Contains(skip, keyword) {
 			found = append(found, array...)
 		}
 	}
@@ -25,7 +25,9 @@ func Subschemas(fields map[string]any) []any {
 		"additionalProperties", "propertyNames", "items", "contains", "not",
 		"if", "then", "else", "unevaluatedItems", "unevaluatedProperties", "contentSchema",
 	} {
-		found = append(found, fields[keyword])
+		if !slices.Contains(skip, keyword) {
+			found = append(found, fields[keyword])
+		}
 	}
 	return found
 }
