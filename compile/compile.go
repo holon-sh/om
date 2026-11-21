@@ -55,6 +55,8 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 	}
 
 	tools := map[string]om.Operation{}
+	builder := schemaBuilder{doc: doc, definitions: map[string]any{}}
+	definitions := map[string]json.RawMessage{}
 	compiler := schema.Compiler{}
 	var omitted []Omission
 	paths := doc.Paths.Map()
@@ -62,7 +64,10 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 		item := paths[path]
 		methods := item.Operations()
 		for _, method := range slices.Sorted(maps.Keys(methods)) {
-			tool, needed, err := compileOperation(doc, compiler, item, methods[method], method, path)
+			tool, needed, err := compileOperation(builder, item, methods[method], method, path)
+			if err == nil {
+				err = check(compiler, builder, definitions, tool)
+			}
 			if existing, taken := tools[tool.Name]; err == nil && taken {
 				err = fmt.Errorf("tool name %q is already used by %s %s", tool.Name, existing.Method, existing.Path)
 			}
@@ -90,8 +95,23 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 	for _, name := range slices.Sorted(maps.Keys(inputs)) {
 		document.Inputs = append(document.Inputs, inputs[name].Input)
 	}
+	var roots []any
 	for _, name := range slices.Sorted(maps.Keys(tools)) {
-		document.Operations = append(document.Operations, tools[name])
+		operation := tools[name]
+		document.Operations = append(document.Operations, operation)
+		var input, output any
+		json.Unmarshal(operation.InputSchema, &input)
+		json.Unmarshal(operation.OutputSchema, &output)
+		roots = append(roots, input, output)
+	}
+	reached, _ := schema.Reach(func(name string) (any, error) { return builder.definitions[name], nil }, roots...)
+	if len(reached) != 0 {
+		document.Definitions = make(map[string]json.RawMessage, len(reached))
+	}
+	for name, definition := range reached {
+		if document.Definitions[name], err = json.Marshal(definition); err != nil {
+			return Compiled{}, err
+		}
 	}
 	return Compiled{Document: document, Omitted: omitted}, nil
 }

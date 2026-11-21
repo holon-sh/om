@@ -330,8 +330,12 @@ components:
 		if operation.OutputSchema == nil {
 			continue
 		}
+		tool, err := compiled.Document.Tool(operation)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var schema any
-		if err := json.Unmarshal(operation.OutputSchema, &schema); err != nil {
+		if err := json.Unmarshal(tool.OutputSchema.(json.RawMessage), &schema); err != nil {
 			t.Fatal(err)
 		}
 		got[operation.Name] = schema

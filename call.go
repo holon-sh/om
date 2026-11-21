@@ -17,7 +17,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/holon-sh/om/internal/schema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -41,20 +40,77 @@ type tool struct {
 
 var toolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
-func compileTool(o Operation, compiler schema.Compiler) (tool, error) {
-	if !toolName.MatchString(o.Name) {
-		return tool{}, fmt.Errorf("tool %q: the name is not an MCP tool name", o.Name)
+func (d Document) tools() ([]tool, error) {
+	registered := map[string]bool{}
+	for _, o := range d.Operations {
+		if !toolName.MatchString(o.Name) {
+			return nil, fmt.Errorf("tool %q: the name is not an MCP tool name", o.Name)
+		}
+		if registered[o.Name] {
+			return nil, fmt.Errorf("tool %q is defined more than once", o.Name)
+		}
+		registered[o.Name] = true
 	}
-	t := tool{Operation: o}
-	var err error
-	t.input, err = compiler.Compile(o.InputSchema)
-	if err == nil && o.OutputSchema != nil {
-		t.output, err = compiler.Compile(o.OutputSchema)
-	}
+	inputs, err := d.validators(false)
 	if err != nil {
-		return tool{}, fmt.Errorf("tool %q: %w", o.Name, err)
+		return nil, err
 	}
-	return t, nil
+	outputs, err := d.validators(true)
+	if err != nil {
+		return nil, err
+	}
+	tools := make([]tool, len(d.Operations))
+	for i, o := range d.Operations {
+		tools[i] = tool{o, inputs[o.Name], outputs[o.Name]}
+	}
+	return tools, nil
+}
+
+func (d Document) validators(result bool) (map[string]*jsonschema.Schema, error) {
+	defs := map[string]any{}
+	for name, data := range d.Definitions {
+		definition, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("definition %q: %w", name, err)
+		}
+		defs[name] = definition
+	}
+	base := "urn:om:input"
+	if result {
+		base = "urn:om:output"
+		definitions(defs).leaveOutWriteOnly(map[string]any{"$defs": defs})
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	if err := compiler.AddResource(base, map[string]any{"$defs": defs}); err != nil {
+		return nil, err
+	}
+	validators := map[string]*jsonschema.Schema{}
+	for _, o := range d.Operations {
+		root := o.InputSchema
+		if result {
+			if o.OutputSchema == nil {
+				continue
+			}
+			root = o.OutputSchema
+		}
+		value, err := jsonschema.UnmarshalJSON(bytes.NewReader(root))
+		if err != nil {
+			return nil, fmt.Errorf("tool %q: %w", o.Name, err)
+		}
+		if result {
+			definitions(defs).leaveOutWriteOnly(value)
+		}
+		rebase(value, base)
+		location := base + "/" + o.Name
+		if err := compiler.AddResource(location, value); err != nil {
+			return nil, err
+		}
+		if validators[o.Name], err = compiler.Compile(location); err != nil {
+			return nil, err
+		}
+	}
+	return validators, nil
 }
 
 func (s served) call(ctx context.Context, t tool, arguments json.RawMessage) *mcp.CallToolResult {
