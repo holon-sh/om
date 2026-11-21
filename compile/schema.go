@@ -74,7 +74,7 @@ func (b schemaBuilder) normalize(value any) error {
 		normalize30(fields)
 	}
 	if b.response {
-		leaveOutWriteOnly(fields)
+		b.leaveOutWriteOnly(fields)
 	}
 	for _, keyword := range []string{"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"} {
 		if object, ok := fields[keyword].(map[string]any); ok {
@@ -131,16 +131,25 @@ func (b schemaBuilder) reference(reference string) (string, error) {
 // from its properties and from those it requires.
 //
 // [writeOnly]: https://json-schema.org/draft/2020-12/json-schema-validation#section-9.4
-func leaveOutWriteOnly(fields map[string]any) {
+func (b schemaBuilder) leaveOutWriteOnly(fields map[string]any) {
 	properties, _ := fields["properties"].(map[string]any)
 	for name, property := range properties {
-		if schema, _ := property.(map[string]any); schema["writeOnly"] == true {
+		if b.writeOnly(property) {
 			delete(properties, name)
 			if required, ok := fields["required"].([]any); ok {
 				fields["required"] = slices.DeleteFunc(required, func(item any) bool { return item == name })
 			}
 		}
 	}
+}
+
+func (b schemaBuilder) writeOnly(property any) bool {
+	schema, _ := property.(map[string]any)
+	reference, _ := schema["$ref"].(string)
+	pointer, _ := url.PathUnescape(reference)
+	name, referenced := strings.CutPrefix(pointer, "#/components/schemas/")
+	return schema["writeOnly"] == true ||
+		referenced && b.doc.Components.Schemas[name] != nil && b.doc.Components.Schemas[name].Value.WriteOnly
 }
 
 func normalize30(fields map[string]any) {
