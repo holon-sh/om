@@ -45,14 +45,14 @@ func (d Document) expand(root json.RawMessage, result bool) (json.RawMessage, er
 		fields["$defs"] = reached
 	}
 	if result {
-		definitions(reached).leaveOutWriteOnly(value)
+		definitions(reached).leaveOutWriteOnly(value, map[string]bool{})
 	}
 	return json.Marshal(value)
 }
 
 type definitions map[string]any
 
-func (d definitions) leaveOutWriteOnly(value any) {
+func (d definitions) leaveOutWriteOnly(value any, seen map[string]bool) {
 	fields, ok := value.(map[string]any)
 	if !ok {
 		return
@@ -67,8 +67,12 @@ func (d definitions) leaveOutWriteOnly(value any) {
 			}, map[string]bool{})
 		})
 	}
-	for _, subschema := range schema.Subschemas(fields) {
-		d.leaveOutWriteOnly(subschema)
+	if reference, ok := fields["$ref"].(string); ok && !seen[reference] {
+		seen[reference] = true
+		d.leaveOutWriteOnly(d.target(reference), seen)
+	}
+	for _, subschema := range schema.Subschemas(fields, "$defs", "definitions", "not", "if", "propertyNames") {
+		d.leaveOutWriteOnly(subschema, seen)
 	}
 }
 
@@ -82,13 +86,17 @@ func (d definitions) applies(value any, test func(map[string]any) bool, seen map
 	}
 	if reference, ok := fields["$ref"].(string); ok && !seen[reference] {
 		seen[reference] = true
-		pointer, _ := url.PathUnescape(strings.TrimPrefix(reference, "#/$defs"))
-		parsed, _ := jsonpointer.New(pointer)
-		target, _, _ := parsed.Get(d)
-		if d.applies(target, test, seen) {
+		if d.applies(d.target(reference), test, seen) {
 			return true
 		}
 	}
 	branches, _ := fields["allOf"].([]any)
 	return slices.ContainsFunc(branches, func(branch any) bool { return d.applies(branch, test, seen) })
+}
+
+func (d definitions) target(reference string) any {
+	pointer, _ := url.PathUnescape(strings.TrimPrefix(reference, "#/$defs"))
+	parsed, _ := jsonpointer.New(pointer)
+	target, _, _ := parsed.Get(d)
+	return target
 }
