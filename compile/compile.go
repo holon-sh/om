@@ -13,6 +13,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/holon-sh/om"
+	"github.com/holon-sh/om/internal/schema"
 )
 
 type Omission struct {
@@ -54,13 +55,14 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 	}
 
 	tools := map[string]om.Operation{}
+	compiler := schema.Compiler{}
 	var omitted []Omission
 	paths := doc.Paths.Map()
 	for _, path := range slices.Sorted(maps.Keys(paths)) {
 		item := paths[path]
 		methods := item.Operations()
 		for _, method := range slices.Sorted(maps.Keys(methods)) {
-			tool, needed, err := compileOperation(doc, item, methods[method], method, path)
+			tool, needed, err := compileOperation(doc, compiler, item, methods[method], method, path)
 			if existing, taken := tools[tool.Name]; err == nil && taken {
 				err = fmt.Errorf("tool name %q is already used by %s %s", tool.Name, existing.Method, existing.Path)
 			}

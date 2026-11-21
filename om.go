@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/holon-sh/om/internal/schema"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -160,17 +161,15 @@ func (s *Security) UnmarshalJSON(data []byte) error {
 // Handler serves the document's operations as MCP tools over Streamable HTTP, statelessly.
 // lookup supplies an input's value by name; transport carries the upstream requests.
 func (d Document) Handler(lookup func(name string) (string, bool), transport http.RoundTripper) (http.Handler, error) {
-	if _, _, err := d.Implementation(); err != nil {
-		return nil, err
-	}
-	client := &http.Client{
+	server, err := served{d, lookup, &http.Client{
 		Transport:     transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Timeout:       30 * time.Second,
+	}}.server()
+	if err != nil {
+		return nil, err
 	}
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return served{d, lookup, client}.server()
-	}, &mcp.StreamableHTTPOptions{
+	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 		Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, Logger: slog.Default(),
 	}), nil
 }
@@ -195,28 +194,34 @@ type served struct {
 // resultType that [MCP 2026-07-28] clients require.
 //
 // [MCP 2026-07-28]: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
-func (s served) server() *mcp.Server {
-	implementation, options, _ := s.Implementation()
+func (s served) server() (*mcp.Server, error) {
+	implementation, options, err := s.Implementation()
+	if err != nil {
+		return nil, err
+	}
 	server := mcp.NewServer(implementation, options)
+	compiler := schema.Compiler{}
+	for _, operation := range s.Operations {
+		t, err := compileTool(operation, compiler)
+		if err != nil {
+			return nil, err
+		}
+		server.AddTool(operation.Tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return s.call(ctx, t, request.Params.Arguments), nil
+		})
+	}
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
-			switch request := request.(type) {
-			case *mcp.ListToolsRequest:
+			if request, ok := request.(*mcp.ListToolsRequest); ok {
 				if request.Params == nil {
 					return s.Tools("")
 				}
 				return s.Tools(request.Params.Cursor)
-			case *mcp.CallToolRequest:
-				if i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name }); i >= 0 {
-					server.AddTool(s.Operations[i].Tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-						return s.call(ctx, s.Operations[i], request.Params.Arguments), nil
-					})
-				}
 			}
 			return next(ctx, method, request)
 		}
 	})
-	return server
+	return server, nil
 }
 
 // pageBytes bounds the name, title, description and schema bytes of a tools/list page.

@@ -15,11 +15,12 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/holon-sh/om"
+	"github.com/holon-sh/om/internal/schema"
 )
 
 var toolNameChar = regexp.MustCompile(`[^A-Za-z0-9_.-]|^[.-]|[.-]$`)
 
-func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Operation, method, path string) (om.Operation, []input, error) {
+func compileOperation(doc *openapi3.T, compiler schema.Compiler, item *openapi3.PathItem, op *openapi3.Operation, method, path string) (om.Operation, []input, error) {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete, http.MethodPost, http.MethodPatch:
 	default:
@@ -101,14 +102,30 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 	if len(builder.definitions) != 0 {
 		schema["$defs"] = builder.definitions
 	}
-	tool.InputSchema, err = json.Marshal(schema)
+	result, err := resultSchema(doc, method, op)
 	if err != nil {
 		return om.Operation{}, nil, err
 	}
-	if result := resultSchema(doc, method, op); result != nil {
-		tool.OutputSchema, err = json.Marshal(result)
+	tool.InputSchema, err = compileSchema(compiler, schema)
+	if err != nil {
+		return om.Operation{}, nil, fmt.Errorf("input schema: %w", err)
 	}
-	return tool, inputs, err
+	if result != nil {
+		tool.OutputSchema, err = compileSchema(compiler, result)
+		if err != nil {
+			return om.Operation{}, nil, fmt.Errorf("output schema: %w", err)
+		}
+	}
+	return tool, inputs, nil
+}
+
+func compileSchema(compiler schema.Compiler, value map[string]any) (json.RawMessage, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	_, err = compiler.Compile(data)
+	return data, err
 }
 
 // toolName follows the MCP tool name format: https://github.com/modelcontextprotocol/modelcontextprotocol/issues/986
@@ -308,14 +325,13 @@ func prohibitedHeader(name string) bool {
 // resultSchema is the type of an operation's result text parsed as JSON: the union of the
 // application/json schemas of its [2xx responses], with null when one has no content, since om's
 // result then has no text. It is nil for [HEAD], whose responses have no body, when no 2xx response
-// carries JSON, when one carries only other media types, and when a schema cannot be converted or is a
-// boolean.
+// carries JSON, when one carries only other media types, and when a schema is a boolean.
 //
 // [2xx responses]: https://spec.openapis.org/oas/v3.2.0.html#responses-object
 // [HEAD]: https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.2
-func resultSchema(doc *openapi3.T, method string, op *openapi3.Operation) map[string]any {
+func resultSchema(doc *openapi3.T, method string, op *openapi3.Operation) (map[string]any, error) {
 	if method == http.MethodHead {
-		return nil
+		return nil, nil
 	}
 	builder := schemaBuilder{doc: doc, definitions: map[string]any{}, response: true}
 	var union []map[string]any
@@ -330,19 +346,22 @@ func resultSchema(doc *openapi3.T, method string, op *openapi3.Operation) map[st
 			nullable = true
 			continue
 		case content["application/json"] == nil:
-			return nil
+			return nil, nil
 		}
 		converted, err := builder.convert(content["application/json"].Schema)
+		if err != nil {
+			return nil, fmt.Errorf("response %s: %w", status, err)
+		}
 		schema, object := converted.(map[string]any)
-		if err != nil || !object {
-			return nil
+		if !object {
+			return nil, nil
 		}
 		if !slices.ContainsFunc(union, func(known map[string]any) bool { return reflect.DeepEqual(known, schema) }) {
 			union = append(union, schema)
 		}
 	}
 	if len(union) == 0 {
-		return nil
+		return nil, nil
 	}
 	if nullable {
 		union = append(union, map[string]any{"type": "null"})
@@ -354,5 +373,5 @@ func resultSchema(doc *openapi3.T, method string, op *openapi3.Operation) map[st
 	if len(builder.definitions) != 0 {
 		result["$defs"] = builder.definitions
 	}
-	return result
+	return result, nil
 }

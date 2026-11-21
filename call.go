@@ -17,6 +17,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/holon-sh/om/internal/schema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -33,23 +34,37 @@ func failure(err error) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(refused)}}, IsError: true}
 }
 
-func (s served) call(ctx context.Context, o Operation, arguments json.RawMessage) *mcp.CallToolResult {
+type tool struct {
+	Operation
+	input, output *jsonschema.Schema
+}
+
+func compileTool(o Operation, compiler schema.Compiler) (tool, error) {
+	t := tool{Operation: o}
+	var err error
+	t.input, err = compiler.Compile(o.InputSchema)
+	if err == nil && o.OutputSchema != nil {
+		t.output, err = compiler.Compile(o.OutputSchema)
+	}
+	if err != nil {
+		return tool{}, fmt.Errorf("tool %s: %w", o.Name, err)
+	}
+	return t, nil
+}
+
+func (s served) call(ctx context.Context, t tool, arguments json.RawMessage) *mcp.CallToolResult {
 	if arguments == nil {
 		arguments = json.RawMessage("{}")
 	}
-	schema, err := compileSchema(o.InputSchema)
-	if err != nil {
-		return failure(refusal(fmt.Sprintf("The input schema of tool %s is not valid JSON Schema 2020-12: %v", o.Name, err)))
-	}
 	var values any
-	err = json.Unmarshal(arguments, &values)
+	err := json.Unmarshal(arguments, &values)
 	if err == nil {
-		err = schema.Validate(values)
+		err = t.input.Validate(values)
 	}
 	if err != nil {
-		return failure(refusal(fmt.Sprintf("Input validation error: Invalid arguments for tool %s: %v", o.Name, err)))
+		return failure(refusal(fmt.Sprintf("Input validation error: Invalid arguments for tool %s: %v", t.Name, err)))
 	}
-	request, err := s.request(ctx, o, values.(map[string]any), arguments)
+	request, err := s.request(ctx, t.Operation, values.(map[string]any), arguments)
 	if err != nil {
 		return failure(err)
 	}
@@ -71,55 +86,19 @@ func (s served) call(ctx context.Context, o Operation, arguments json.RawMessage
 	if text != "" {
 		result.Content = []mcp.Content{&mcp.TextContent{Text: text}}
 	}
-	if o.OutputSchema != nil {
-		result.StructuredContent, err = structured(o, cmp.Or(text, "null"))
-		if err != nil {
-			return failure(err)
+	if t.output != nil {
+		body := cmp.Or(text, "null")
+		value, err := jsonschema.UnmarshalJSON(strings.NewReader(body))
+		if err == nil {
+			err = t.output.Validate(value)
 		}
+		if err != nil {
+			return failure(refusal(fmt.Sprintf("The upstream response does not match the document: %v", err)))
+		}
+		result.StructuredContent = json.RawMessage(body)
 	}
 	return result
 }
-
-func structured(o Operation, body string) (json.RawMessage, error) {
-	schema, err := compileSchema(o.OutputSchema)
-	if err != nil {
-		return nil, refusal(fmt.Sprintf("The output schema of tool %s is not valid JSON Schema 2020-12: %v", o.Name, err))
-	}
-	value, err := jsonschema.UnmarshalJSON(strings.NewReader(body))
-	if err == nil {
-		err = schema.Validate(value)
-	}
-	if err != nil {
-		return nil, refusal(fmt.Sprintf("The upstream response does not match the document: %v", err))
-	}
-	return json.RawMessage(body), nil
-}
-
-func compileSchema(schema json.RawMessage) (*jsonschema.Schema, error) {
-	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
-	if err != nil {
-		return nil, err
-	}
-	compiler := jsonschema.NewCompiler()
-	compiler.DefaultDraft(jsonschema.Draft2020)
-	compiler.UseRegexpEngine(func(pattern string) (jsonschema.Regexp, error) {
-		compiled, err := regexp.Compile(pattern)
-		if err != nil {
-			return unenforced(pattern), nil
-		}
-		return compiled, nil
-	})
-	const location = "urn:om:schema"
-	if err := compiler.AddResource(location, document); err != nil {
-		return nil, err
-	}
-	return compiler.Compile(location)
-}
-
-type unenforced string
-
-func (p unenforced) String() string        { return string(p) }
-func (unenforced) MatchString(string) bool { return true }
 
 func responseText(response *http.Response) (string, error) {
 	const limit = 1 << 20

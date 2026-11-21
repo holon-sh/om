@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -69,6 +70,11 @@ func (b schemaBuilder) normalize(value any) error {
 			return fmt.Errorf("schema dialect %s is unsupported", dialect)
 		}
 		delete(fields, "$schema")
+	}
+	if pattern, ok := fields["pattern"].(string); ok {
+		if _, err := regexp.Compile(pattern); err != nil {
+			delete(fields, "pattern")
+		}
 	}
 	if b.doc.IsOpenAPI30() {
 		normalize30(fields)
