@@ -15,18 +15,18 @@ import (
 
 func (d Document) standalone(o Operation) (Operation, error) {
 	var err error
-	if o.InputSchema, err = d.expand(o.InputSchema, false); err != nil {
+	if o.InputSchema, err = d.expand(o.InputSchema, "readOnly"); err != nil {
 		return Operation{}, err
 	}
 	if o.OutputSchema != nil {
-		if o.OutputSchema, err = d.expand(o.OutputSchema, true); err != nil {
+		if o.OutputSchema, err = d.expand(o.OutputSchema, "writeOnly"); err != nil {
 			return Operation{}, err
 		}
 	}
 	return o, nil
 }
 
-func (d Document) expand(root json.RawMessage, result bool) (json.RawMessage, error) {
+func (d Document) expand(root json.RawMessage, absent string) (json.RawMessage, error) {
 	value, err := jsonschema.UnmarshalJSON(bytes.NewReader(root))
 	if err != nil {
 		return nil, err
@@ -44,15 +44,13 @@ func (d Document) expand(root json.RawMessage, result bool) (json.RawMessage, er
 	if fields, ok := value.(map[string]any); ok && len(reached) != 0 {
 		fields["$defs"] = reached
 	}
-	if result {
-		definitions(reached).leaveOutWriteOnly(value)
-	}
+	definitions(reached).leaveOut(value, absent)
 	return json.Marshal(value)
 }
 
 type definitions map[string]any
 
-func (d definitions) leaveOutWriteOnly(value any) {
+func (d definitions) leaveOut(value any, absent string) {
 	fields, ok := value.(map[string]any)
 	if !ok {
 		return
@@ -61,14 +59,15 @@ func (d definitions) leaveOutWriteOnly(value any) {
 		fields["required"] = slices.DeleteFunc(required, func(name any) bool {
 			return d.applies(fields, func(object map[string]any) bool {
 				properties, _ := object["properties"].(map[string]any)
-				return d.applies(properties[name.(string)], func(property map[string]any) bool {
-					return property["writeOnly"] == true
+				key, _ := name.(string)
+				return d.applies(properties[key], func(property map[string]any) bool {
+					return property[absent] == true
 				}, map[string]bool{})
 			}, map[string]bool{})
 		})
 	}
 	for _, subschema := range schema.Subschemas(fields, "not", "if", "propertyNames") {
-		d.leaveOutWriteOnly(subschema)
+		d.leaveOut(subschema, absent)
 	}
 }
 
