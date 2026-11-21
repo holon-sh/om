@@ -39,7 +39,12 @@ type tool struct {
 	input, output *jsonschema.Schema
 }
 
+var toolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+
 func compileTool(o Operation, compiler schema.Compiler) (tool, error) {
+	if !toolName.MatchString(o.Name) {
+		return tool{}, fmt.Errorf("tool %q: the name is not an MCP tool name", o.Name)
+	}
 	t := tool{Operation: o}
 	var err error
 	t.input, err = compiler.Compile(o.InputSchema)
@@ -47,7 +52,7 @@ func compileTool(o Operation, compiler schema.Compiler) (tool, error) {
 		t.output, err = compiler.Compile(o.OutputSchema)
 	}
 	if err != nil {
-		return tool{}, fmt.Errorf("tool %s: %w", o.Name, err)
+		return tool{}, fmt.Errorf("tool %q: %w", o.Name, err)
 	}
 	return t, nil
 }

@@ -201,14 +201,21 @@ func (s served) server() (*mcp.Server, error) {
 	}
 	server := mcp.NewServer(implementation, options)
 	compiler := schema.Compiler{}
+	registered := map[string]bool{}
 	for _, operation := range s.Operations {
+		if registered[operation.Name] {
+			return nil, fmt.Errorf("tool %q is defined more than once", operation.Name)
+		}
+		registered[operation.Name] = true
 		t, err := compileTool(operation, compiler)
 		if err != nil {
 			return nil, err
 		}
-		server.AddTool(operation.Tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if err := addTool(server, operation.Tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return s.call(ctx, t, request.Params.Arguments), nil
-		})
+		}); err != nil {
+			return nil, err
+		}
 	}
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
@@ -222,6 +229,16 @@ func (s served) server() (*mcp.Server, error) {
 		}
 	})
 	return server, nil
+}
+
+func addTool(server *mcp.Server, tool *mcp.Tool, handler mcp.ToolHandler) (err error) {
+	defer func() {
+		if refused := recover(); refused != nil {
+			err = fmt.Errorf("%v", refused)
+		}
+	}()
+	server.AddTool(tool, handler)
+	return nil
 }
 
 // pageBytes bounds the name, title, description and schema bytes of a tools/list page.
