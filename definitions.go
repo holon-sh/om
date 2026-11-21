@@ -45,14 +45,14 @@ func (d Document) expand(root json.RawMessage, result bool) (json.RawMessage, er
 		fields["$defs"] = reached
 	}
 	if result {
-		definitions(reached).leaveOutWriteOnly(value, map[string]bool{})
+		definitions(reached).leaveOutWriteOnly(value)
 	}
 	return json.Marshal(value)
 }
 
 type definitions map[string]any
 
-func (d definitions) leaveOutWriteOnly(value any, seen map[string]bool) {
+func (d definitions) leaveOutWriteOnly(value any) {
 	fields, ok := value.(map[string]any)
 	if !ok {
 		return
@@ -67,12 +67,8 @@ func (d definitions) leaveOutWriteOnly(value any, seen map[string]bool) {
 			}, map[string]bool{})
 		})
 	}
-	if reference, ok := fields["$ref"].(string); ok && !seen[reference] {
-		seen[reference] = true
-		d.leaveOutWriteOnly(d.target(reference), seen)
-	}
-	for _, subschema := range schema.Subschemas(fields, "$defs", "definitions", "not", "if", "propertyNames") {
-		d.leaveOutWriteOnly(subschema, seen)
+	for _, subschema := range schema.Subschemas(fields, "not", "if", "propertyNames") {
+		d.leaveOutWriteOnly(subschema)
 	}
 }
 
