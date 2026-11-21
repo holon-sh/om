@@ -14,18 +14,19 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const Format = 1
+const Format = 2
 
 // Document is a compiled OpenAPI document: one MCP tool per operation.
 // Its JSON encoding is the model a host stores between compiling and serving.
 type Document struct {
-	Format      int         `json:"om"`
-	Title       string      `json:"title"`
-	Version     string      `json:"version"`
-	Description string      `json:"description,omitempty"`
-	Server      string      `json:"server"`
-	Inputs      []Input     `json:"inputs"`
-	Operations  []Operation `json:"operations"`
+	Format      int                        `json:"om"`
+	Title       string                     `json:"title"`
+	Version     string                     `json:"version"`
+	Description string                     `json:"description,omitempty"`
+	Server      string                     `json:"server"`
+	Inputs      []Input                    `json:"inputs"`
+	Definitions map[string]json.RawMessage `json:"definitions,omitempty"`
+	Operations  []Operation                `json:"operations"`
 }
 
 // Input is a value the host supplies by name: a server variable when it has a default, a credential when it has none.
@@ -50,15 +51,16 @@ type Authorization struct {
 }
 
 type Operation struct {
-	Name        string          `json:"name"`
-	Title       string          `json:"title,omitempty"`
-	Description string          `json:"description,omitempty"`
-	Method      string          `json:"method"`
-	Path        string          `json:"path"`
-	InputSchema json.RawMessage `json:"inputSchema"`
-	Parameters  []Parameter     `json:"parameters,omitempty"`
-	Body        bool            `json:"body,omitempty"`
-	Security    Security        `json:"security,omitempty"`
+	Name         string          `json:"name"`
+	Title        string          `json:"title,omitempty"`
+	Description  string          `json:"description,omitempty"`
+	Method       string          `json:"method"`
+	Path         string          `json:"path"`
+	InputSchema  json.RawMessage `json:"inputSchema"`
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
+	Parameters   []Parameter     `json:"parameters,omitempty"`
+	Body         bool            `json:"body,omitempty"`
+	Security     Security        `json:"security,omitempty"`
 }
 
 type Parameter struct {
@@ -207,8 +209,12 @@ func (s served) server() *mcp.Server {
 				return s.Tools(request.Params.Cursor)
 			case *mcp.CallToolRequest:
 				if i := slices.IndexFunc(s.Operations, func(o Operation) bool { return o.Name == request.Params.Name }); i >= 0 {
-					server.AddTool(s.Operations[i].Tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-						return s.call(ctx, s.Operations[i], request.Params.Arguments), nil
+					operation, err := s.standalone(s.Operations[i])
+					if err != nil {
+						return nil, err
+					}
+					server.AddTool(operation.tool(), func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+						return s.call(ctx, operation, request.Params.Arguments), nil
 					})
 				}
 			}
@@ -218,7 +224,7 @@ func (s served) server() *mcp.Server {
 	return server
 }
 
-// pageBytes bounds the name, title, description and input schema bytes of a tools/list page.
+// pageBytes bounds the name, title, description and schema bytes of a tools/list page.
 const pageBytes = 256 << 10
 
 // Tools is the page of tools a tools/list cursor names. A cursor Tools did not issue is [invalid params].
@@ -236,19 +242,34 @@ func (d Document) Tools(cursor string) (*mcp.ListToolsResult, error) {
 	result := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Cacheable: mcp.Cacheable{CacheScope: "public"}}
 	size := 0
 	for i, operation := range d.Operations[start:] {
-		size += len(operation.Name) + len(operation.Title) + len(operation.Description) + len(operation.InputSchema)
+		operation, err := d.standalone(operation)
+		if err != nil {
+			return nil, err
+		}
+		size += len(operation.Name) + len(operation.Title) + len(operation.Description) + len(operation.InputSchema) + len(operation.OutputSchema)
 		if i > 0 && size > pageBytes {
 			result.NextCursor = strconv.Itoa(start + i)
 			break
 		}
-		result.Tools = append(result.Tools, operation.Tool())
+		result.Tools = append(result.Tools, operation.tool())
 	}
 	return result, nil
 }
 
 // Tool is the MCP tool the operation is served as.
-func (o Operation) Tool() *mcp.Tool {
+func (d Document) Tool(o Operation) (*mcp.Tool, error) {
+	o, err := d.standalone(o)
+	if err != nil {
+		return nil, err
+	}
+	return o.tool(), nil
+}
+
+func (o Operation) tool() *mcp.Tool {
 	tool := &mcp.Tool{Name: o.Name, Title: o.Title, Description: o.Description, InputSchema: o.InputSchema}
+	if o.OutputSchema != nil {
+		tool.OutputSchema = o.OutputSchema
+	}
 	switch o.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		tool.Annotations = &mcp.ToolAnnotations{ReadOnlyHint: true}

@@ -2,6 +2,7 @@ package om
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -65,10 +66,33 @@ func (s served) call(ctx context.Context, o Operation, arguments json.RawMessage
 		return failure(refusal(fmt.Sprintf("HTTP %d: %s", response.StatusCode, text)))
 	case response.StatusCode/100 != 2:
 		return failure(refusal(fmt.Sprintf("HTTP %d", response.StatusCode)))
-	case text == "":
-		return &mcp.CallToolResult{Content: []mcp.Content{}}
 	}
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+	result := &mcp.CallToolResult{}
+	if text != "" {
+		result.Content = []mcp.Content{&mcp.TextContent{Text: text}}
+	}
+	if o.OutputSchema != nil {
+		result.StructuredContent, err = structured(o, cmp.Or(text, "null"))
+		if err != nil {
+			return failure(err)
+		}
+	}
+	return result
+}
+
+func structured(o Operation, body string) (json.RawMessage, error) {
+	schema, err := compileSchema(o.OutputSchema)
+	if err != nil {
+		return nil, refusal(fmt.Sprintf("The output schema of tool %s is not valid JSON Schema 2020-12: %v", o.Name, err))
+	}
+	value, err := jsonschema.UnmarshalJSON(strings.NewReader(body))
+	if err == nil {
+		err = schema.Validate(value)
+	}
+	if err != nil {
+		return nil, refusal(fmt.Sprintf("The upstream response does not match the document: %v", err))
+	}
+	return json.RawMessage(body), nil
 }
 
 func compileSchema(schema json.RawMessage) (*jsonschema.Schema, error) {
@@ -85,7 +109,7 @@ func compileSchema(schema json.RawMessage) (*jsonschema.Schema, error) {
 		}
 		return compiled, nil
 	})
-	const location = "urn:om:input"
+	const location = "urn:om:schema"
 	if err := compiler.AddResource(location, document); err != nil {
 		return nil, err
 	}
@@ -131,6 +155,9 @@ func (s served) request(ctx context.Context, o Operation, values map[string]any,
 	}
 	paths := map[string]string{}
 	r := upstream{header: http.Header{}}
+	if o.OutputSchema != nil {
+		r.header.Set("Accept", "application/json")
+	}
 	for _, parameter := range o.Parameters {
 		escape := encode
 		if parameter.In == Header {

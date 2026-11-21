@@ -19,7 +19,7 @@ import (
 
 var toolNameChar = regexp.MustCompile(`[^A-Za-z0-9_.-]|^[.-]|[.-]$`)
 
-func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Operation, method, path string) (om.Operation, []input, error) {
+func compileOperation(builder schemaBuilder, item *openapi3.PathItem, op *openapi3.Operation, method, path string) (om.Operation, []input, error) {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete, http.MethodPost, http.MethodPatch:
 	default:
@@ -28,7 +28,7 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 	if len(item.Servers) != 0 || op.Servers != nil && len(*op.Servers) != 0 {
 		return om.Operation{}, nil, errors.New("path- and operation-level servers are unsupported")
 	}
-	auth, inputs, err := compileSecurity(doc, op)
+	auth, inputs, err := compileSecurity(builder.doc, op)
 	if err != nil {
 		return om.Operation{}, nil, err
 	}
@@ -36,7 +36,6 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 		Name: toolName(op, method, path), Title: op.Summary, Description: op.Description, Method: method, Path: path,
 		Security: auth,
 	}
-	builder := schemaBuilder{doc: doc, definitions: map[string]any{}}
 	properties := map[string]any{}
 	var required []string
 	argument := func(name string, shape any, description string, isRequired bool) error {
@@ -98,10 +97,13 @@ func compileOperation(doc *openapi3.T, item *openapi3.PathItem, op *openapi3.Ope
 	if len(required) != 0 {
 		schema["required"] = required
 	}
-	if len(builder.definitions) != 0 {
-		schema["$defs"] = builder.definitions
-	}
 	tool.InputSchema, err = json.Marshal(schema)
+	if err != nil {
+		return om.Operation{}, nil, err
+	}
+	if result := resultSchema(builder, method, op); result != nil {
+		tool.OutputSchema, err = json.Marshal(result)
+	}
 	return tool, inputs, err
 }
 
@@ -303,16 +305,15 @@ func prohibitedHeader(name string) bool {
 // application/json schemas of its [2xx responses], with null when one has no content, since om's
 // result then has no text. It is nil for [HEAD], whose responses have no body, when no 2xx response
 // carries JSON, when one carries only other media types, and when a schema cannot be converted or is a
-// boolean. Components it uses are added to definitions.
+// boolean.
 //
 // [2xx responses]: https://spec.openapis.org/oas/v3.2.0.html#responses-object
 // [HEAD]: https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.2
-func resultSchema(doc *openapi3.T, definitions map[string]any, method string, op *openapi3.Operation) any {
+func resultSchema(builder schemaBuilder, method string, op *openapi3.Operation) map[string]any {
 	if method == http.MethodHead {
 		return nil
 	}
-	builder := schemaBuilder{doc: doc, known: definitions, definitions: map[string]any{}, response: true}
-	var union []any
+	var union []map[string]any
 	nullable := false
 	responses := op.Responses.Map()
 	for _, status := range slices.Sorted(maps.Keys(responses)) {
@@ -326,23 +327,23 @@ func resultSchema(doc *openapi3.T, definitions map[string]any, method string, op
 		case content["application/json"] == nil:
 			return nil
 		}
-		schema, err := builder.convert(content["application/json"].Schema)
-		if _, object := schema.(map[string]any); err != nil || !object {
+		converted, err := builder.convert(content["application/json"].Schema)
+		schema, object := converted.(map[string]any)
+		if err != nil || !object {
 			return nil
 		}
-		if !slices.ContainsFunc(union, func(known any) bool { return reflect.DeepEqual(known, schema) }) {
+		if !slices.ContainsFunc(union, func(known map[string]any) bool { return reflect.DeepEqual(known, schema) }) {
 			union = append(union, schema)
 		}
 	}
 	if len(union) == 0 {
 		return nil
 	}
-	maps.Copy(definitions, builder.definitions)
 	if nullable {
 		union = append(union, map[string]any{"type": "null"})
 	}
-	if len(union) == 1 {
-		return union[0]
+	if len(union) > 1 {
+		return map[string]any{"anyOf": union}
 	}
-	return map[string]any{"anyOf": union}
+	return union[0]
 }

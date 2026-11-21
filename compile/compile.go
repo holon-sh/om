@@ -13,6 +13,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/holon-sh/om"
+	"github.com/holon-sh/om/internal/schema"
 )
 
 type Omission struct {
@@ -31,14 +32,10 @@ type Compiled struct {
 	Document om.Document
 	// Omitted are the operations Document leaves out.
 	Omitted []Omission
-	// Responses is one JSON Schema, or nil when no tool has a result type. Each property is named after
-	// a tool and describes its result's text parsed as JSON, null when there is no text; $defs holds the
-	// document's components that the properties use, once each. Nothing serves or checks it.
-	Responses json.RawMessage
 }
 
-// Compile turns one OpenAPI 3.0–3.2 document into a Document, the operations it left out, and the
-// types of its tools' results. location resolves relative server URLs.
+// Compile turns one OpenAPI 3.0–3.2 document into a Document and the operations it left out.
+// location resolves relative server URLs.
 func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, error) {
 	doc, err := load(ctx, data)
 	if err != nil {
@@ -58,14 +55,14 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 	}
 
 	tools := map[string]om.Operation{}
-	results, definitions := map[string]any{}, map[string]any{}
+	builder := schemaBuilder{doc: doc, definitions: map[string]any{}, added: &[]string{}}
 	var omitted []Omission
 	paths := doc.Paths.Map()
 	for _, path := range slices.Sorted(maps.Keys(paths)) {
 		item := paths[path]
 		methods := item.Operations()
 		for _, method := range slices.Sorted(maps.Keys(methods)) {
-			tool, needed, err := compileOperation(doc, item, methods[method], method, path)
+			tool, needed, err := compileOperation(builder, item, methods[method], method, path)
 			if existing, taken := tools[tool.Name]; err == nil && taken {
 				err = fmt.Errorf("tool name %q is already used by %s %s", tool.Name, existing.Method, existing.Path)
 			}
@@ -77,9 +74,6 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 				continue
 			}
 			tools[tool.Name] = tool
-			if result := resultSchema(doc, definitions, method, methods[method]); result != nil {
-				results[tool.Name] = result
-			}
 		}
 	}
 	if len(tools) == 0 {
@@ -96,14 +90,23 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 	for _, name := range slices.Sorted(maps.Keys(inputs)) {
 		document.Inputs = append(document.Inputs, inputs[name].Input)
 	}
+	var roots []any
 	for _, name := range slices.Sorted(maps.Keys(tools)) {
-		document.Operations = append(document.Operations, tools[name])
+		operation := tools[name]
+		document.Operations = append(document.Operations, operation)
+		var input, output any
+		json.Unmarshal(operation.InputSchema, &input)
+		json.Unmarshal(operation.OutputSchema, &output)
+		roots = append(roots, input, output)
 	}
-	compiled := Compiled{Document: document, Omitted: omitted}
-	if len(results) != 0 {
-		compiled.Responses, err = json.Marshal(map[string]any{"properties": results, "$defs": definitions})
+	reached, _ := schema.Reach(func(name string) (any, error) { return builder.definitions[name], nil }, roots...)
+	document.Definitions = make(map[string]json.RawMessage, len(reached))
+	for name, definition := range reached {
+		if document.Definitions[name], err = json.Marshal(definition); err != nil {
+			return Compiled{}, err
+		}
 	}
-	return compiled, err
+	return Compiled{Document: document, Omitted: omitted}, nil
 }
 
 func load(ctx context.Context, data []byte) (*openapi3.T, error) {
