@@ -10,15 +10,29 @@ import (
 
 	"github.com/go-openapi/jsonpointer"
 	"github.com/holon-sh/om/internal/schema"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-func (d Document) standalone(root json.RawMessage, result bool) (json.RawMessage, error) {
-	value, err := decode(root)
+func (d Document) standalone(o Operation) (Operation, error) {
+	var err error
+	if o.InputSchema, err = d.expand(o.InputSchema, false); err != nil {
+		return Operation{}, err
+	}
+	if o.OutputSchema != nil {
+		if o.OutputSchema, err = d.expand(o.OutputSchema, true); err != nil {
+			return Operation{}, err
+		}
+	}
+	return o, nil
+}
+
+func (d Document) expand(root json.RawMessage, result bool) (json.RawMessage, error) {
+	value, err := jsonschema.UnmarshalJSON(bytes.NewReader(root))
 	if err != nil {
 		return nil, err
 	}
 	reached, err := schema.Reach(func(name string) (any, error) {
-		definition, err := decode(d.Definitions[name])
+		definition, err := jsonschema.UnmarshalJSON(bytes.NewReader(d.Definitions[name]))
 		if err != nil {
 			return nil, fmt.Errorf("definition %q: %w", name, err)
 		}
@@ -27,21 +41,13 @@ func (d Document) standalone(root json.RawMessage, result bool) (json.RawMessage
 	if err != nil {
 		return nil, err
 	}
-	if len(reached) != 0 {
-		value.(map[string]any)["$defs"] = reached
+	if fields, ok := value.(map[string]any); ok && len(reached) != 0 {
+		fields["$defs"] = reached
 	}
 	if result {
 		definitions(reached).leaveOutWriteOnly(value)
 	}
 	return json.Marshal(value)
-}
-
-func decode(data json.RawMessage) (any, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var value any
-	err := decoder.Decode(&value)
-	return value, err
 }
 
 type definitions map[string]any
@@ -78,7 +84,7 @@ func (d definitions) applies(value any, test func(map[string]any) bool, seen map
 		seen[reference] = true
 		pointer, _ := url.PathUnescape(strings.TrimPrefix(reference, "#/$defs"))
 		parsed, _ := jsonpointer.New(pointer)
-		target, _, _ := parsed.Get(map[string]any(d))
+		target, _, _ := parsed.Get(d)
 		if d.applies(target, test, seen) {
 			return true
 		}

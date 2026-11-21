@@ -253,33 +253,33 @@ func (d Document) Tools(cursor string) (*mcp.ListToolsResult, error) {
 	result := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Cacheable: mcp.Cacheable{CacheScope: "public"}}
 	size := 0
 	for i, operation := range d.Operations[start:] {
-		tool, err := d.Tool(operation)
+		operation, err := d.standalone(operation)
 		if err != nil {
 			return nil, err
 		}
-		input, _ := tool.InputSchema.(json.RawMessage)
-		output, _ := tool.OutputSchema.(json.RawMessage)
-		size += len(tool.Name) + len(tool.Title) + len(tool.Description) + len(input) + len(output)
+		size += len(operation.Name) + len(operation.Title) + len(operation.Description) + len(operation.InputSchema) + len(operation.OutputSchema)
 		if i > 0 && size > pageBytes {
 			result.NextCursor = strconv.Itoa(start + i)
 			break
 		}
-		result.Tools = append(result.Tools, tool)
+		result.Tools = append(result.Tools, operation.tool())
 	}
 	return result, nil
 }
 
 // Tool is the MCP tool the operation is served as.
 func (d Document) Tool(o Operation) (*mcp.Tool, error) {
-	input, err := d.standalone(o.InputSchema, false)
+	o, err := d.standalone(o)
 	if err != nil {
 		return nil, err
 	}
-	tool := &mcp.Tool{Name: o.Name, Title: o.Title, Description: o.Description, InputSchema: input}
+	return o.tool(), nil
+}
+
+func (o Operation) tool() *mcp.Tool {
+	tool := &mcp.Tool{Name: o.Name, Title: o.Title, Description: o.Description, InputSchema: o.InputSchema}
 	if o.OutputSchema != nil {
-		if tool.OutputSchema, err = d.standalone(o.OutputSchema, true); err != nil {
-			return nil, err
-		}
+		tool.OutputSchema = o.OutputSchema
 	}
 	switch o.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
@@ -287,5 +287,5 @@ func (d Document) Tool(o Operation) (*mcp.Tool, error) {
 	case http.MethodPut, http.MethodDelete:
 		tool.Annotations = &mcp.ToolAnnotations{IdempotentHint: true}
 	}
-	return tool, nil
+	return tool
 }

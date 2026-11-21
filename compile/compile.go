@@ -55,7 +55,7 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 	}
 
 	tools := map[string]om.Operation{}
-	builder := schemaBuilder{doc: doc, definitions: map[string]any{}}
+	builder := schemaBuilder{doc: doc, definitions: map[string]any{}, added: &[]string{}}
 	definitions := map[string]json.RawMessage{}
 	compiler := schema.Compiler{}
 	var omitted []Omission
@@ -105,13 +105,9 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 		roots = append(roots, input, output)
 	}
 	reached, _ := schema.Reach(func(name string) (any, error) { return builder.definitions[name], nil }, roots...)
-	if len(reached) != 0 {
-		document.Definitions = make(map[string]json.RawMessage, len(reached))
-	}
-	for name, definition := range reached {
-		if document.Definitions[name], err = json.Marshal(definition); err != nil {
-			return Compiled{}, err
-		}
+	document.Definitions = make(map[string]json.RawMessage, len(reached))
+	for name := range reached {
+		document.Definitions[name] = definitions[name]
 	}
 	return Compiled{Document: document, Omitted: omitted}, nil
 }

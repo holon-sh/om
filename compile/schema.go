@@ -17,6 +17,7 @@ import (
 type schemaBuilder struct {
 	doc         *openapi3.T
 	definitions map[string]any
+	added       *[]string
 }
 
 func (b schemaBuilder) convert(ref *openapi3.SchemaRef) (any, error) {
@@ -96,10 +97,15 @@ func (b schemaBuilder) reference(reference string) (string, error) {
 		return "", fmt.Errorf("schema reference targets missing component %q", name)
 	}
 	if _, exists := b.definitions[name]; !exists {
+		mark := len(*b.added)
+		*b.added = append(*b.added, name)
 		b.definitions[name] = nil
 		value, err := b.convert(b.doc.Components.Schemas[name])
 		if err != nil {
-			delete(b.definitions, name)
+			for _, added := range (*b.added)[mark:] {
+				delete(b.definitions, added)
+			}
+			*b.added = (*b.added)[:mark]
 			return "", err
 		}
 		b.definitions[name] = value
