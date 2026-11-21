@@ -325,25 +325,29 @@ components:
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got, want any
-	if err := json.Unmarshal(compiled.Responses, &got); err != nil {
-		t.Fatal(err)
+	got := map[string]any{}
+	for _, operation := range compiled.Document.Operations {
+		if operation.OutputSchema == nil {
+			continue
+		}
+		var schema any
+		if err := json.Unmarshal(operation.OutputSchema, &schema); err != nil {
+			t.Fatal(err)
+		}
+		got[operation.Name] = schema
 	}
-	if err := json.Unmarshal([]byte(`{
-  "properties": {
-    "listPets": {"type": "array", "items": {"$ref": "#/$defs/Pet"}},
-    "createPet": {"anyOf": [{"$ref": "#/$defs/Pet"}, {"$ref": "#/$defs/Job"}]},
-    "replacePet": {"anyOf": [{"$ref": "#/$defs/Pet"}, {"type": "null"}]}
-  },
-  "$defs": {
-    "Pet": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "owner": {"$ref": "#/$defs/Owner"}}},
-    "Owner": {"type": "object", "properties": {"name": {"type": "string"}}},
-    "Job": {"type": "object", "properties": {"id": {"type": "integer"}}}
-  }
-}`), &want); err != nil {
+	const pet = `"Pet": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "owner": {"$ref": "#/$defs/Owner"}}},
+    "Owner": {"type": "object", "properties": {"name": {"type": "string"}}}`
+	var want map[string]any
+	if err := json.Unmarshal([]byte(fmt.Sprintf(`{
+  "listPets": {"type": "array", "items": {"$ref": "#/$defs/Pet"}, "$defs": {%[1]s}},
+  "createPet": {"anyOf": [{"$ref": "#/$defs/Pet"}, {"$ref": "#/$defs/Job"}], "$defs": {%[1]s,
+    "Job": {"type": "object", "properties": {"id": {"type": "integer"}}}}},
+  "replacePet": {"anyOf": [{"$ref": "#/$defs/Pet"}, {"type": "null"}], "$defs": {%[1]s}}
+}`, pet)), &want); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("responses %s", compiled.Responses)
+		t.Fatalf("output schemas %v", got)
 	}
 }

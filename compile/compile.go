@@ -31,14 +31,10 @@ type Compiled struct {
 	Document om.Document
 	// Omitted are the operations Document leaves out.
 	Omitted []Omission
-	// Responses is one JSON Schema, or nil when no tool has a result type. Each property is named after
-	// a tool and describes its result's text parsed as JSON, null when there is no text; $defs holds the
-	// document's components that the properties use, once each. Nothing serves or checks it.
-	Responses json.RawMessage
 }
 
-// Compile turns one OpenAPI 3.0–3.2 document into a Document, the operations it left out, and the
-// types of its tools' results. location resolves relative server URLs.
+// Compile turns one OpenAPI 3.0–3.2 document into a Document and the operations it left out.
+// location resolves relative server URLs.
 func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, error) {
 	doc, err := load(ctx, data)
 	if err != nil {
@@ -58,7 +54,6 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 	}
 
 	tools := map[string]om.Operation{}
-	results, definitions := map[string]any{}, map[string]any{}
 	var omitted []Omission
 	paths := doc.Paths.Map()
 	for _, path := range slices.Sorted(maps.Keys(paths)) {
@@ -77,9 +72,6 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 				continue
 			}
 			tools[tool.Name] = tool
-			if result := resultSchema(doc, definitions, method, methods[method]); result != nil {
-				results[tool.Name] = result
-			}
 		}
 	}
 	if len(tools) == 0 {
@@ -99,11 +91,7 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 	for _, name := range slices.Sorted(maps.Keys(tools)) {
 		document.Operations = append(document.Operations, tools[name])
 	}
-	compiled := Compiled{Document: document, Omitted: omitted}
-	if len(results) != 0 {
-		compiled.Responses, err = json.Marshal(map[string]any{"properties": results, "$defs": definitions})
-	}
-	return compiled, err
+	return Compiled{Document: document, Omitted: omitted}, nil
 }
 
 func load(ctx context.Context, data []byte) (*openapi3.T, error) {

@@ -13,12 +13,12 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 )
 
-// schemaBuilder converts OpenAPI schemas, adding the components they reference to definitions unless
-// known already holds them. A response builder leaves out the properties that only requests carry.
+// schemaBuilder converts OpenAPI schemas, adding the components they reference to definitions. A
+// response builder leaves out the properties that only requests carry.
 type schemaBuilder struct {
-	doc                *openapi3.T
-	known, definitions map[string]any
-	response           bool
+	doc         *openapi3.T
+	definitions map[string]any
+	response    bool
 }
 
 func (b schemaBuilder) convert(ref *openapi3.SchemaRef) (any, error) {
@@ -116,8 +116,7 @@ func (b schemaBuilder) reference(reference string) (string, error) {
 	if b.doc.Components == nil || b.doc.Components.Schemas[name] == nil {
 		return "", fmt.Errorf("schema reference targets missing component %q", name)
 	}
-	_, known := b.known[name]
-	if _, exists := b.definitions[name]; !exists && !known {
+	if _, exists := b.definitions[name]; !exists {
 		b.definitions[name] = nil
 		value, err := b.convert(b.doc.Components.Schemas[name])
 		if err != nil {

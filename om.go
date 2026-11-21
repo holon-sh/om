@@ -14,7 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const Format = 1
+const Format = 2
 
 // Document is a compiled OpenAPI document: one MCP tool per operation.
 // Its JSON encoding is the model a host stores between compiling and serving.
@@ -50,15 +50,16 @@ type Authorization struct {
 }
 
 type Operation struct {
-	Name        string          `json:"name"`
-	Title       string          `json:"title,omitempty"`
-	Description string          `json:"description,omitempty"`
-	Method      string          `json:"method"`
-	Path        string          `json:"path"`
-	InputSchema json.RawMessage `json:"inputSchema"`
-	Parameters  []Parameter     `json:"parameters,omitempty"`
-	Body        bool            `json:"body,omitempty"`
-	Security    Security        `json:"security,omitempty"`
+	Name         string          `json:"name"`
+	Title        string          `json:"title,omitempty"`
+	Description  string          `json:"description,omitempty"`
+	Method       string          `json:"method"`
+	Path         string          `json:"path"`
+	InputSchema  json.RawMessage `json:"inputSchema"`
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
+	Parameters   []Parameter     `json:"parameters,omitempty"`
+	Body         bool            `json:"body,omitempty"`
+	Security     Security        `json:"security,omitempty"`
 }
 
 type Parameter struct {
@@ -218,7 +219,7 @@ func (s served) server() *mcp.Server {
 	return server
 }
 
-// pageBytes bounds the name, title, description and input schema bytes of a tools/list page.
+// pageBytes bounds the name, title, description and schema bytes of a tools/list page.
 const pageBytes = 256 << 10
 
 // Tools is the page of tools a tools/list cursor names. A cursor Tools did not issue is [invalid params].
@@ -236,7 +237,7 @@ func (d Document) Tools(cursor string) (*mcp.ListToolsResult, error) {
 	result := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Cacheable: mcp.Cacheable{CacheScope: "public"}}
 	size := 0
 	for i, operation := range d.Operations[start:] {
-		size += len(operation.Name) + len(operation.Title) + len(operation.Description) + len(operation.InputSchema)
+		size += len(operation.Name) + len(operation.Title) + len(operation.Description) + len(operation.InputSchema) + len(operation.OutputSchema)
 		if i > 0 && size > pageBytes {
 			result.NextCursor = strconv.Itoa(start + i)
 			break
@@ -249,6 +250,9 @@ func (d Document) Tools(cursor string) (*mcp.ListToolsResult, error) {
 // Tool is the MCP tool the operation is served as.
 func (o Operation) Tool() *mcp.Tool {
 	tool := &mcp.Tool{Name: o.Name, Title: o.Title, Description: o.Description, InputSchema: o.InputSchema}
+	if o.OutputSchema != nil {
+		tool.OutputSchema = o.OutputSchema
+	}
 	switch o.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		tool.Annotations = &mcp.ToolAnnotations{ReadOnlyHint: true}
