@@ -17,6 +17,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/holon-sh/om/internal/schema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -67,25 +68,11 @@ func (d Document) tools() ([]tool, error) {
 }
 
 func (d Document) validators(result bool) (map[string]*jsonschema.Schema, error) {
-	defs := map[string]any{}
-	for name, data := range d.Definitions {
-		definition, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
-		if err != nil {
-			return nil, fmt.Errorf("definition %q: %w", name, err)
-		}
-		defs[name] = definition
-	}
-	base := "urn:om:input"
+	base, absent := "urn:om:input", "readOnly"
 	if result {
-		base = "urn:om:output"
-		definitions(defs).leaveOutWriteOnly(map[string]any{"$defs": defs})
+		base, absent = "urn:om:output", "writeOnly"
 	}
-	compiler := jsonschema.NewCompiler()
-	compiler.DefaultDraft(jsonschema.Draft2020)
-	if err := compiler.AddResource(base, map[string]any{"$defs": defs}); err != nil {
-		return nil, err
-	}
-	validators := map[string]*jsonschema.Schema{}
+	roots := map[string]any{}
 	for _, o := range d.Operations {
 		root := o.InputSchema
 		if result {
@@ -98,15 +85,29 @@ func (d Document) validators(result bool) (map[string]*jsonschema.Schema, error)
 		if err != nil {
 			return nil, fmt.Errorf("tool %q: %w", o.Name, err)
 		}
-		if result {
-			definitions(defs).leaveOutWriteOnly(value)
-		}
-		rebase(value, base)
-		location := base + "/" + o.Name
-		if err := compiler.AddResource(location, value); err != nil {
+		roots[o.Name] = value
+	}
+	reached, err := schema.Reach(d.definition, slices.Collect(maps.Values(roots))...)
+	if err != nil {
+		return nil, err
+	}
+	for _, definition := range reached {
+		definitions(reached).leaveOut(definition, absent)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	if err := compiler.AddResource(base, map[string]any{"$defs": reached}); err != nil {
+		return nil, err
+	}
+	validators := map[string]*jsonschema.Schema{}
+	for name, root := range roots {
+		definitions(reached).leaveOut(root, absent)
+		rebase(root, base)
+		location := base + "/" + name
+		if err := compiler.AddResource(location, root); err != nil {
 			return nil, err
 		}
-		if validators[o.Name], err = compiler.Compile(location); err != nil {
+		if validators[name], err = compiler.Compile(location); err != nil {
 			return nil, err
 		}
 	}
