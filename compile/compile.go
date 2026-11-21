@@ -55,7 +55,7 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 	}
 
 	tools := map[string]om.Operation{}
-	builder := schemaBuilder{doc: doc, definitions: map[string]any{}}
+	builder := schemaBuilder{doc: doc, definitions: map[string]any{}, added: &[]string{}}
 	var omitted []Omission
 	paths := doc.Paths.Map()
 	for _, path := range slices.Sorted(maps.Keys(paths)) {
@@ -100,9 +100,7 @@ func Compile(ctx context.Context, data []byte, location *url.URL) (Compiled, err
 		roots = append(roots, input, output)
 	}
 	reached, _ := schema.Reach(func(name string) (any, error) { return builder.definitions[name], nil }, roots...)
-	if len(reached) != 0 {
-		document.Definitions = make(map[string]json.RawMessage, len(reached))
-	}
+	document.Definitions = make(map[string]json.RawMessage, len(reached))
 	for name, definition := range reached {
 		if document.Definitions[name], err = json.Marshal(definition); err != nil {
 			return Compiled{}, err
