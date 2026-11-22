@@ -160,7 +160,7 @@ func (s *Security) UnmarshalJSON(data []byte) error {
 
 // Handler serves the document's operations as MCP tools over Streamable HTTP, statelessly.
 // lookup supplies an input's value by name; transport carries the upstream requests.
-func (d Document) Handler(lookup func(name string) (string, bool), transport http.RoundTripper) (http.Handler, error) {
+func (d Document) Handler(lookup func(ctx context.Context, name string) (string, bool), transport http.RoundTripper) (http.Handler, error) {
 	server, err := served{d, lookup, &http.Client{
 		Transport:     transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -186,7 +186,7 @@ func (d Document) Implementation() (*mcp.Implementation, *mcp.ServerOptions, err
 
 type served struct {
 	Document
-	lookup func(string) (string, bool)
+	lookup func(context.Context, string) (string, bool)
 	client *http.Client
 }
 

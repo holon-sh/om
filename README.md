@@ -38,7 +38,7 @@ model, err := json.Marshal(compiled.Document)
 
 var served om.Document
 err = json.Unmarshal(model, &served)
-handler, err := served.Handler(os.LookupEnv, http.DefaultTransport)
+handler, err := served.Handler(func(_ context.Context, name string) (string, bool) { return os.LookupEnv(name) }, http.DefaultTransport)
 http.Handle("/mcp", handler)
 ```
 

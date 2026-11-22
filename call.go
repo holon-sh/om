@@ -188,7 +188,8 @@ var placeholder = regexp.MustCompile(`\{([^{}]+)\}`)
 var dotSegment = regexp.MustCompile(`(?i)^(?:\.|%2e){1,2}$`)
 
 func (s served) request(ctx context.Context, o Operation, values map[string]any, arguments json.RawMessage) (*http.Request, error) {
-	server, err := s.serverURL()
+	lookup := func(name string) (string, bool) { return s.lookup(ctx, name) }
+	server, err := s.serverURL(lookup)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +230,7 @@ func (s served) request(ctx context.Context, o Operation, values map[string]any,
 		}
 	}
 	for _, credential := range o.Security {
-		if err := credential.attach(&r, s.lookup); err != nil {
+		if err := credential.attach(&r, lookup); err != nil {
 			return nil, err
 		}
 	}
@@ -272,13 +273,13 @@ func (s served) request(ctx context.Context, o Operation, values map[string]any,
 	return request, nil
 }
 
-func (s served) serverURL() (string, error) {
+func (s served) serverURL(lookup func(string) (string, bool)) (string, error) {
 	server := s.Server
 	for _, input := range s.Inputs {
 		if input.Default == nil {
 			continue
 		}
-		value, ok := s.lookup(input.Name)
+		value, ok := lookup(input.Name)
 		if !ok {
 			value = *input.Default
 		}
