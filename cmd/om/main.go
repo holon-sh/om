@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -58,7 +59,14 @@ func serve(ctx context.Context, source string) error {
 		return err
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcphttp.WithLegacyClients(handler, proxy.MaxMessageBytes))
+	mux.Handle("/mcp", mcphttp.WithLegacyClients(handler, proxy.MaxMessageBytes, func(_ *http.Request, call proxy.Request) (json.RawMessage, error) {
+		for _, o := range document.Operations {
+			if o.Name == call.Name {
+				return o.InputSchema, nil
+			}
+		}
+		return nil, nil
+	}))
 	port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
 	fmt.Printf("MCP server listening at http://%s/mcp\n", net.JoinHostPort(host, port))
 	return http.Serve(listener, mux)

@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/getkin/kin-openapi v0.153.0
 	github.com/go-openapi/jsonpointer v0.22.5
-	github.com/holon-sh/mcp-bridge v0.0.13-0.20261122013907-542111c41a8f
+	github.com/holon-sh/mcp-bridge v0.0.13-0.20261122031347-e1f07fc6ece8
 	github.com/modelcontextprotocol/go-sdk v1.9.0-pre.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 )
