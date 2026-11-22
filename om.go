@@ -181,7 +181,7 @@ func (d Document) Implementation() (*mcp.Implementation, *mcp.ServerOptions, err
 		return nil, nil, fmt.Errorf("model format %d is not served by this version of om, which serves format %d; compile the document again", d.Format, Format)
 	}
 	return &mcp.Implementation{Name: d.Title, Title: d.Title, Version: d.Version},
-		&mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}}, nil
+		&mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, SupportedProtocolVersions: []string{"2026-07-28"}}, nil
 }
 
 type served struct {

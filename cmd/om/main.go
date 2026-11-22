@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	mcphttp "github.com/holon-sh/mcp-bridge/http"
+	"github.com/holon-sh/mcp-bridge/proxy"
 	"github.com/holon-sh/om/compile"
 )
 
@@ -56,7 +58,7 @@ func serve(ctx context.Context, source string) error {
 		return err
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", handler)
+	mux.Handle("/mcp", mcphttp.WithLegacyClients(handler, proxy.MaxMessageBytes))
 	port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
 	fmt.Printf("MCP server listening at http://%s/mcp\n", net.JoinHostPort(host, port))
 	return http.Serve(listener, mux)
