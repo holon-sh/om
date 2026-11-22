@@ -340,7 +340,7 @@ func resultSchema(builder schemaBuilder, method string, op *openapi3.Operation) 
 		return nil, nil
 	}
 	var union []map[string]any
-	nullable := false
+	nullable, untyped := false, false
 	responses := op.Responses.Map()
 	for _, status := range slices.Sorted(maps.Keys(responses)) {
 		content := responses[status].Value.Content
@@ -351,7 +351,8 @@ func resultSchema(builder schemaBuilder, method string, op *openapi3.Operation) 
 			nullable = true
 			continue
 		case content["application/json"] == nil:
-			return nil, nil
+			untyped = true
+			continue
 		}
 		converted, err := builder.convert(content["application/json"].Schema)
 		if err != nil {
@@ -359,13 +360,14 @@ func resultSchema(builder schemaBuilder, method string, op *openapi3.Operation) 
 		}
 		schema, object := converted.(map[string]any)
 		if !object {
-			return nil, nil
+			untyped = true
+			continue
 		}
 		if !slices.ContainsFunc(union, func(known map[string]any) bool { return reflect.DeepEqual(known, schema) }) {
 			union = append(union, schema)
 		}
 	}
-	if len(union) == 0 {
+	if untyped || len(union) == 0 {
 		return nil, nil
 	}
 	if nullable {
