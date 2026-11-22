@@ -2,6 +2,7 @@ package om_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -58,7 +59,7 @@ func TestHandler(t *testing.T) {
 	if err := json.Unmarshal(model, &document); err != nil {
 		t.Fatal(err)
 	}
-	lookup := func(name string) (string, bool) { return "test-key", name == "OM_WIDGET_KEY" }
+	lookup := func(_ context.Context, name string) (string, bool) { return "test-key", name == "OM_WIDGET_KEY" }
 	if _, err := (om.Document{Format: om.Format + 1}).Handler(lookup, upstream.Client().Transport); err == nil {
 		t.Fatal("served a model format this version does not know")
 	}

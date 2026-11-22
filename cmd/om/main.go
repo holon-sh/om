@@ -46,7 +46,7 @@ func serve(ctx context.Context, source string) error {
 			fmt.Fprintln(os.Stderr, "Set", input.Name, "to supply credentials for tools that need it.")
 		}
 	}
-	handler, err := document.Handler(os.LookupEnv, http.DefaultTransport)
+	handler, err := document.Handler(func(_ context.Context, name string) (string, bool) { return os.LookupEnv(name) }, http.DefaultTransport)
 	if err != nil {
 		return err
 	}
